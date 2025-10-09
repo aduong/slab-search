@@ -6,6 +6,7 @@ import (
 
 	"github.com/blevesearch/bleve/v2"
 	"github.com/blevesearch/bleve/v2/mapping"
+
 	"github.com/renderinc/slab-search/internal/storage"
 )
 
@@ -178,14 +179,16 @@ func (i *Index) Count() (uint64, error) {
 	return i.index.DocCount()
 }
 
-// Rebuild completely rebuilds the index from storage
+// Rebuild completely rebuilds the index from storage with progress callback
 // This is useful when changing index configuration or fixing corruption
-func (i *Index) Rebuild(db *storage.DB) error {
+func (i *Index) Rebuild(db *storage.DB, progressFn func(current, total int)) error {
 	// Get all documents first
 	docs, err := db.List(false) // Don't include archived
 	if err != nil {
 		return fmt.Errorf("list documents: %w", err)
 	}
+
+	totalDocs := len(docs)
 
 	// Delete all documents from index
 	docCount, err := i.index.DocCount()
@@ -215,26 +218,36 @@ func (i *Index) Rebuild(db *storage.DB) error {
 		}
 	}
 
-	// Index all documents from storage
-	batch := i.index.NewBatch()
-	for _, doc := range docs {
-		indexDoc := &IndexedDocument{
-			ID:          doc.ID,
-			Title:       doc.Title,
-			Content:     doc.Content,
-			Author:      doc.AuthorName,
-			PublishedAt: doc.PublishedAt,
-			UpdatedAt:   doc.UpdatedAt,
-			SlabURL:     doc.SlabURL,
+	// Index all documents from storage with progress reporting
+	batchSize := 100
+	for start := 0; start < totalDocs; start += batchSize {
+		end := min(start + batchSize, totalDocs)
+
+		batch := i.index.NewBatch()
+		for _, doc := range docs[start:end] {
+			indexDoc := &IndexedDocument{
+				ID:          doc.ID,
+				Title:       doc.Title,
+				Content:     doc.Content,
+				Author:      doc.AuthorName,
+				PublishedAt: doc.PublishedAt,
+				UpdatedAt:   doc.UpdatedAt,
+				SlabURL:     doc.SlabURL,
+			}
+
+			if err := batch.Index(indexDoc.ID, indexDoc); err != nil {
+				return fmt.Errorf("batch index %s: %w", doc.ID, err)
+			}
 		}
 
-		if err := batch.Index(indexDoc.ID, indexDoc); err != nil {
-			return fmt.Errorf("batch index %s: %w", doc.ID, err)
+		if err := i.index.Batch(batch); err != nil {
+			return fmt.Errorf("commit batch: %w", err)
 		}
-	}
 
-	if err := i.index.Batch(batch); err != nil {
-		return fmt.Errorf("commit batch: %w", err)
+		// Report progress
+		if progressFn != nil {
+			progressFn(end, totalDocs)
+		}
 	}
 
 	return nil

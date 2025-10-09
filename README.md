@@ -102,25 +102,31 @@ export SLAB_TOKEN="your-jwt-token-here"
 ```
 
 **Search Features:**
-- Title matches boosted 3x
+- English analyzer with stemming (find "deploy" when searching "deployment")
+- Stopword removal (ignores "the", "a", "is", etc.)
 - Result highlighting with context
 - Shows author, URL, and score
 - Sorted by relevance
+
+**Note:** For search quality improvements and tradeoffs, see `SEARCH_IMPROVEMENTS.md`
 
 ### Reindexing
 
 ```bash
 # Rebuild search index from database (no Slab sync needed)
 ./slab-search reindex
+
+# Shows live progress:
+# Indexing: 5000/10023 (49.9%)
 ```
 
 **When to reindex:**
-- After changing index configuration (boost weights, analyzers)
+- After changing index configuration (analyzers, field mappings)
 - When search results seem stale or incorrect
 - After upgrading Bleve version
 - To fix index corruption
 
-**Performance:** ~8 seconds for 10,023 posts
+**Performance:** ~9-10 seconds for 10,023 posts (with live progress indicator)
 
 **Note:** This does NOT re-sync from Slab, it rebuilds the Bleve index from your existing SQLite database. Use `sync` to fetch new/updated posts from Slab.
 

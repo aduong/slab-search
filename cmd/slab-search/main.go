@@ -217,20 +217,27 @@ func runReindex() {
 
 	fmt.Printf("Found %d documents in database\n", dbCount)
 	fmt.Println("Clearing and rebuilding index...")
+	fmt.Println()
 
-	// Rebuild index
+	// Rebuild index with progress reporting
 	startTime := time.Now()
-	if err := idx.Rebuild(db); err != nil {
-		log.Fatalf("Error rebuilding index: %v", err)
+	progressFn := func(current, total int) {
+		percent := float64(current) / float64(total) * 100
+		fmt.Printf("\rIndexing: %d/%d (%.1f%%)  ", current, total, percent)
+	}
+
+	if err := idx.Rebuild(db, progressFn); err != nil {
+		log.Fatalf("\nError rebuilding index: %v", err)
 	}
 	duration := time.Since(startTime)
 
 	// Get new index count
 	indexCount, err := idx.Count()
 	if err != nil {
-		log.Fatalf("Error getting index count: %v", err)
+		log.Fatalf("\nError getting index count: %v", err)
 	}
 
+	fmt.Println() // New line after progress
 	fmt.Println()
 	fmt.Println("=== Reindex Complete ===")
 	fmt.Printf("Documents indexed: %d\n", indexCount)
