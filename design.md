@@ -172,6 +172,12 @@ Build a custom search layer that periodically syncs documents from Slab and prov
 - **Testing**: Standard library + Testify for assertions
 - **Migration**: golang-migrate for database schemas
 
+**TODO: Implement proper database migrations**
+- Currently using CREATE TABLE IF NOT EXISTS which doesn't handle schema changes
+- Need migration system for adding new columns (e.g., embedding BLOB)
+- Consider: golang-migrate, goose, or custom migration tracking
+- For now: Manual ALTER TABLE commands (see below)
+
 ### 3.3 Data Models
 
 #### SQLite Schema
@@ -193,11 +199,32 @@ CREATE TABLE documents (
 );
 
 -- Indexes for common query patterns
-CREATE INDEX idx_author ON documents(author_name);
-CREATE INDEX idx_published ON documents(published_at);
-CREATE INDEX idx_updated ON documents(updated_at);
-CREATE INDEX idx_archived ON documents(archived_at);
-CREATE INDEX idx_synced ON documents(synced_at);
+CREATE INDEX IF NOT EXISTS idx_author ON documents(author_name);
+CREATE INDEX IF NOT EXISTS idx_published ON documents(published_at);
+CREATE INDEX IF NOT EXISTS idx_updated ON documents(updated_at);
+CREATE INDEX IF NOT EXISTS idx_archived ON documents(archived_at);
+CREATE INDEX IF NOT EXISTS idx_synced ON documents(synced_at);
+```
+
+#### Manual Schema Migrations
+
+**For existing databases created before Phase 2 (semantic search):**
+
+```sql
+-- Add embedding column if it doesn't exist (SQLite 3.35.0+)
+ALTER TABLE documents ADD COLUMN embedding BLOB;
+```
+
+**Manual migration command:**
+```bash
+# Connect to database and add column
+sqlite3 data/slab.db "ALTER TABLE documents ADD COLUMN embedding BLOB;"
+
+# Verify column was added
+sqlite3 data/slab.db "PRAGMA table_info(documents);"
+```
+
+**Note**: After adding the embedding column, run `./slab-search sync` to regenerate embeddings for all documents.
 ```
 
 #### Sync State (JSON file)

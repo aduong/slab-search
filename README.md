@@ -113,22 +113,32 @@ export SLAB_TOKEN="your-jwt-token-here"
 ### Reindexing
 
 ```bash
-# Rebuild search index from database (no Slab sync needed)
+# Rebuild search index AND regenerate embeddings from database (no Slab sync needed)
 ./slab-search reindex
 
 # Shows live progress:
+# Embeddings: 5000/10023 (49.9%) - 4995 generated, 5 failed
 # Indexing: 5000/10023 (49.9%)
 ```
 
 **When to reindex:**
+- After adding the embedding column to an existing database
 - After changing index configuration (analyzers, field mappings)
 - When search results seem stale or incorrect
 - After upgrading Bleve version
 - To fix index corruption
+- To regenerate all embeddings with a new model
 
-**Performance:** ~9-10 seconds for 10,023 posts (with live progress indicator)
+**Performance:**
+- Bleve index rebuild: ~9-10 seconds for 10,023 posts
+- Embedding generation: ~8-12 minutes for 10,023 posts (if Ollama available)
+- Total: ~8-12 minutes with embeddings
 
-**Note:** This does NOT re-sync from Slab, it rebuilds the Bleve index from your existing SQLite database. Use `sync` to fetch new/updated posts from Slab.
+**What it does:**
+- ✅ Regenerates embeddings for ALL documents (if Ollama running)
+- ✅ Rebuilds Bleve keyword search index
+- ❌ Does NOT re-sync from Slab (uses existing database content)
+- Use `sync` to fetch new/updated posts from Slab
 
 ### Statistics
 
