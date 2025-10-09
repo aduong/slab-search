@@ -2,9 +2,10 @@
 
 ## ✅ IMPLEMENTATION STATUS
 
-**MVP COMPLETE + OPTIMIZED** - Successfully implemented and optimized on 2025-10-08/09
+**Phase 1 MVP: COMPLETE + OPTIMIZED** (2025-10-08/09)
+**Phase 2 Semantic Search: IN PROGRESS** (2025-10-09)
 
-**What Works:**
+**What Works (Phase 1):**
 - ✅ Direct post discovery via `GetAllSlimPosts()` (10,444 posts in ~3s)
 - ✅ High-performance concurrent markdown fetching (20 workers)
 - ✅ Timestamp-based optimization (38x faster re-syncs)
@@ -14,6 +15,11 @@
 - ✅ Reindex without re-syncing from Slab (~8s for 10k posts)
 - ✅ Progress reporting during sync (every 5 seconds)
 - ✅ Full dataset: 10,023 posts synced in 1m45s (initial) / 2.8s (re-sync)
+
+**In Progress (Phase 2):**
+- 🔄 Semantic search with Ollama embeddings
+- 🔄 Hybrid scoring (keyword + semantic)
+- See `EMBEDDINGS_IMPLEMENTATION.md` for implementation plan
 
 **Key Learnings:**
 - `currentSession.organization.posts` is much faster than topic iteration
@@ -175,7 +181,6 @@ CREATE TABLE documents (
     id TEXT PRIMARY KEY,
     title TEXT NOT NULL,
     content TEXT NOT NULL,        -- Markdown from export endpoint
-    content_hash TEXT NOT NULL,   -- MD5 hash for change detection
     author_name TEXT,
     author_email TEXT,
     slab_url TEXT NOT NULL,       -- https://slab.render.com/posts/{id}
@@ -183,8 +188,8 @@ CREATE TABLE documents (
     published_at TIMESTAMP,
     updated_at TIMESTAMP,
     archived_at TIMESTAMP,        -- NULL if not archived
-    synced_at TIMESTAMP NOT NULL  -- When we last synced this doc
-    -- embedding field added in Phase 2 for semantic search
+    synced_at TIMESTAMP NOT NULL, -- When we last synced this doc
+    embedding BLOB                -- Phase 2: 768 floats × 4 bytes = 3KB per doc
 );
 
 -- Indexes for common query patterns
@@ -254,8 +259,33 @@ func (s *SearchIndex) Search(query string, limit int) ([]Result, error) {
 
 #### Semantic Search (Phase 2)
 ```go
-// Deferred to Phase 2 - Add hybrid search with embeddings later
-// Will use brute-force cosine similarity for <50k documents
+// Implementation using Ollama for embedding generation
+// See EMBEDDINGS_IMPLEMENTATION.md for full design and rationale
+
+type EmbeddingClient struct {
+    baseURL string // http://localhost:11434
+    model   string // nomic-embed-text (768-dim)
+}
+
+func (c *EmbeddingClient) Embed(text string) ([]float32, error) {
+    // POST to Ollama API: /api/embed
+}
+
+// Semantic search using brute-force cosine similarity
+// Performance: ~40ms for 10k documents (acceptable for our scale)
+func SemanticSearch(queryEmbedding []float32, limit int) []*SearchResult {
+    // 1. Load all document embeddings from SQLite
+    // 2. Compute cosine similarity: dot(a,b) / (norm(a) * norm(b))
+    // 3. Sort by similarity score
+    // 4. Return top N results
+}
+
+// Hybrid search combines keyword (70%) + semantic (30%)
+func HybridSearch(query string, limit int) []*SearchResult {
+    keywordResults := BleveSearch(query, limit*2)
+    semanticResults := SemanticSearch(Embed(query), limit*2)
+    return MergeWithWeights(keywordResults, semanticResults, 0.7, 0.3)
+}
 ```
 
 ### 3.4 Component Design
@@ -323,8 +353,10 @@ search:
 
 embeddings:
   enabled: true                # Enable semantic search
-  model: "local"               # "local" or "openai"
-  dimension: 384               # For local model
+  provider: "ollama"           # "ollama" (local) or "openai" (cloud)
+  ollama_url: "http://localhost:11434"
+  model: "nomic-embed-text"    # Ollama model name (768-dim)
+  hybrid_weight: 0.3           # Semantic weight in hybrid search (0.0-1.0)
 ```
 
 ### 3.6 Deployment Options
@@ -378,15 +410,21 @@ services:
 - [ ] Basic logging and error handling
 
 ### Phase 2: Enhancement (Week 3-4)
-- [ ] Semantic search with local embeddings (all-MiniLM-L6-v2)
-- [ ] Hybrid scoring (keyword + semantic)
+- [ ] Semantic search with Ollama embeddings (nomic-embed-text, 768-dim)
+  - Setup Ollama service (systemd)
+  - Add `embedding BLOB` column to documents table
+  - Generate embeddings during sync (~8min for 10k docs)
+  - Implement cosine similarity search (brute-force, ~40ms)
+- [ ] Hybrid scoring (keyword 70% + semantic 30%)
 - [ ] Author and date filtering
 - [ ] Improved UI with HTMX interactivity
 - [ ] Automated daily sync (cron/scheduler)
 - [ ] Search result highlighting improvements
 - [ ] Performance optimizations
-- [ ] Incremental sync (only changed docs)
+- [ ] Incremental sync (only changed docs) ✅ DONE (timestamp-based)
 - [ ] Monitoring dashboard
+
+**See `EMBEDDINGS_IMPLEMENTATION.md` for detailed semantic search design and implementation plan.**
 
 ### Phase 3: Production (Week 5-6)
 - [ ] Incremental sync using changes API
