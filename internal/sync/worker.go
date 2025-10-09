@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/renderinc/slab-search/internal/embeddings"
 	"github.com/renderinc/slab-search/internal/search"
 	"github.com/renderinc/slab-search/internal/slab"
 	"github.com/renderinc/slab-search/internal/storage"
@@ -15,30 +16,36 @@ import (
 
 // Worker handles syncing posts from Slab
 type Worker struct {
-	slabClient *slab.Client
-	db         *storage.DB
-	index      *search.Index
-	maxPosts   int // Limit for testing (0 = unlimited)
+	slabClient     *slab.Client
+	db             *storage.DB
+	index          *search.Index
+	embedder       *embeddings.Client // Optional: nil if embeddings disabled
+	maxPosts       int                // Limit for testing (0 = unlimited)
+	enableEmbeddings bool             // Whether to generate embeddings
 }
 
 // NewWorker creates a new sync worker
-func NewWorker(slabClient *slab.Client, db *storage.DB, index *search.Index, maxPosts int) *Worker {
+func NewWorker(slabClient *slab.Client, db *storage.DB, index *search.Index, embedder *embeddings.Client, maxPosts int) *Worker {
 	return &Worker{
-		slabClient: slabClient,
-		db:         db,
-		index:      index,
-		maxPosts:   maxPosts,
+		slabClient:       slabClient,
+		db:               db,
+		index:            index,
+		embedder:         embedder,
+		maxPosts:         maxPosts,
+		enableEmbeddings: embedder != nil,
 	}
 }
 
 // Stats holds sync statistics
 type Stats struct {
-	TotalPosts   int
-	NewPosts     int
-	UpdatedPosts int
-	SkippedPosts int
-	Errors       int
-	Duration     time.Duration
+	TotalPosts       int
+	NewPosts         int
+	UpdatedPosts     int
+	SkippedPosts     int
+	EmbeddingsGen    int // Number of embeddings generated
+	EmbeddingsFailed int // Number of embedding failures
+	Errors           int
+	Duration         time.Duration
 }
 
 // Sync performs a full sync of posts
@@ -103,11 +110,17 @@ func (w *Worker) Sync(ctx context.Context) (*Stats, error) {
 		for range progressTicker.C {
 			mu.Lock()
 			current := processed
+			embGen := stats.EmbeddingsGen
 			mu.Unlock()
 			if current > 0 && current < totalPosts {
 				percent := float64(current) / float64(totalPosts) * 100
-				log.Printf("Progress: %d/%d (%.1f%%) - %d new, %d updated, %d skipped, %d errors\n",
-					current, totalPosts, percent, stats.NewPosts, stats.UpdatedPosts, stats.SkippedPosts, stats.Errors)
+				if w.enableEmbeddings {
+					log.Printf("Progress: %d/%d (%.1f%%) - %d new, %d updated, %d skipped, %d errors, %d embeddings\n",
+						current, totalPosts, percent, stats.NewPosts, stats.UpdatedPosts, stats.SkippedPosts, stats.Errors, embGen)
+				} else {
+					log.Printf("Progress: %d/%d (%.1f%%) - %d new, %d updated, %d skipped, %d errors\n",
+						current, totalPosts, percent, stats.NewPosts, stats.UpdatedPosts, stats.SkippedPosts, stats.Errors)
+				}
 			}
 		}
 	}()
@@ -135,8 +148,13 @@ func (w *Worker) Sync(ctx context.Context) (*Stats, error) {
 	wg.Wait()
 
 	stats.Duration = time.Since(startTime)
-	log.Printf("Sync complete: %d new, %d updated, %d skipped, %d errors in %v\n",
-		stats.NewPosts, stats.UpdatedPosts, stats.SkippedPosts, stats.Errors, stats.Duration)
+	if w.enableEmbeddings {
+		log.Printf("Sync complete: %d new, %d updated, %d skipped, %d errors, %d embeddings generated (%d failed) in %v\n",
+			stats.NewPosts, stats.UpdatedPosts, stats.SkippedPosts, stats.Errors, stats.EmbeddingsGen, stats.EmbeddingsFailed, stats.Duration)
+	} else {
+		log.Printf("Sync complete: %d new, %d updated, %d skipped, %d errors in %v\n",
+			stats.NewPosts, stats.UpdatedPosts, stats.SkippedPosts, stats.Errors, stats.Duration)
+	}
 
 	return stats, nil
 }
@@ -191,6 +209,26 @@ func (w *Worker) syncPost(ctx context.Context, slimPost *slab.SlimPost, stats *S
 	if post.Owner != nil {
 		doc.AuthorName = post.Owner.Name
 		doc.AuthorEmail = post.Owner.Email
+	}
+
+	// 5.5. Generate embedding if enabled (optional - graceful degradation)
+	if w.enableEmbeddings {
+		// Combine title and content for embedding
+		textToEmbed := fmt.Sprintf("%s\n\n%s", slimPost.Title, markdown)
+
+		embedding, err := w.embedder.Embed(textToEmbed)
+		if err != nil {
+			log.Printf("Warning: Failed to generate embedding for %s: %v", slimPost.ID, err)
+			mu.Lock()
+			stats.EmbeddingsFailed++
+			mu.Unlock()
+			// Continue without embedding - graceful degradation
+		} else {
+			doc.Embedding = embeddings.SerializeEmbedding(embedding)
+			mu.Lock()
+			stats.EmbeddingsGen++
+			mu.Unlock()
+		}
 	}
 
 	// 6. Store in database

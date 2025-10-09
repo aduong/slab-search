@@ -13,6 +13,7 @@ import (
 // Index wraps a Bleve search index
 type Index struct {
 	index bleve.Index
+	db    *storage.DB // For semantic search access to embeddings
 }
 
 // IndexedDocument represents a document in the search index
@@ -89,6 +90,11 @@ func buildIndexMapping() mapping.IndexMapping {
 // Close closes the index
 func (i *Index) Close() error {
 	return i.index.Close()
+}
+
+// SetDB sets the database reference (needed for semantic search)
+func (i *Index) SetDB(db *storage.DB) {
+	i.db = db
 }
 
 // Index adds or updates a document in the index

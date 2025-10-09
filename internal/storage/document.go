@@ -15,4 +15,5 @@ type Document struct {
 	UpdatedAt   time.Time  `db:"updated_at"`
 	ArchivedAt  *time.Time `db:"archived_at"` // NULL if not archived
 	SyncedAt    time.Time  `db:"synced_at"`   // When we synced
+	Embedding   []byte     `db:"embedding"`   // Vector embedding (BLOB)
 }
