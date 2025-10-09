@@ -277,6 +277,30 @@ if existingUpdatedAt.Equal(post.UpdatedAt) {
 **Added:** Updates every 5 seconds during sync
 **Shows:** Percentage complete, new/updated/skipped counts
 
+### 5. Reindexing Without Re-Syncing
+**Added:** `reindex` command to rebuild Bleve index from SQLite
+**Purpose:** Improve search results without re-downloading from Slab
+**Use cases:**
+- Changing index configuration (boost weights, analyzers)
+- Upgrading Bleve version
+- Fixing index corruption
+**Performance:** ~8 seconds for 10,023 posts
+
+**Implementation:**
+```go
+// Rebuild index from database
+func (i *Index) Rebuild(db *storage.DB) error {
+    // Delete all docs from index
+    // Read all docs from SQLite
+    // Batch reindex
+}
+```
+
+### 6. Content Hash Removal
+**Removed:** MD5 content hashing
+**Reason:** Redundant with timestamp-based change detection
+**Benefits:** Simpler code, no MD5 computation overhead
+
 ### Final Performance Metrics
 
 **Production Dataset (10,023 posts):**

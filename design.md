@@ -10,7 +10,8 @@
 - ✅ Timestamp-based optimization (38x faster re-syncs)
 - ✅ SQLite storage with change detection
 - ✅ Bleve full-text search with fuzzy matching
-- ✅ CLI commands: sync, search, stats
+- ✅ CLI commands: sync, search, reindex, stats
+- ✅ Reindex without re-syncing from Slab (~8s for 10k posts)
 - ✅ Progress reporting during sync (every 5 seconds)
 - ✅ Full dataset: 10,023 posts synced in 1m45s (initial) / 2.8s (re-sync)
 

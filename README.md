@@ -107,6 +107,23 @@ export SLAB_TOKEN="your-jwt-token-here"
 - Shows author, URL, and score
 - Sorted by relevance
 
+### Reindexing
+
+```bash
+# Rebuild search index from database (no Slab sync needed)
+./slab-search reindex
+```
+
+**When to reindex:**
+- After changing index configuration (boost weights, analyzers)
+- When search results seem stale or incorrect
+- After upgrading Bleve version
+- To fix index corruption
+
+**Performance:** ~8 seconds for 10,023 posts
+
+**Note:** This does NOT re-sync from Slab, it rebuilds the Bleve index from your existing SQLite database. Use `sync` to fetch new/updated posts from Slab.
+
 ### Statistics
 
 ```bash

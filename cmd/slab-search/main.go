@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/renderinc/slab-search/internal/search"
 	"github.com/renderinc/slab-search/internal/slab"
@@ -38,6 +39,8 @@ func main() {
 		}
 		query := strings.Join(os.Args[2:], " ")
 		runSearch(query)
+	case "reindex":
+		runReindex()
 	case "stats":
 		runStats()
 	default:
@@ -53,6 +56,7 @@ func printUsage() {
 	fmt.Println("Usage:")
 	fmt.Println("  slab-search sync              Sync posts from Slab")
 	fmt.Println("  slab-search search <query>    Search for documents")
+	fmt.Println("  slab-search reindex           Rebuild search index from database")
 	fmt.Println("  slab-search stats             Show index statistics")
 	fmt.Println()
 	fmt.Println("Examples:")
@@ -60,6 +64,7 @@ func printUsage() {
 	fmt.Println("  slab-search search kubernetes")
 	fmt.Println("  slab-search search \"postgres config\"")
 	fmt.Println("  slab-search search 'deploy~'  # Fuzzy search")
+	fmt.Println("  slab-search reindex           # Rebuild index without re-syncing")
 }
 
 func runSync() {
@@ -184,6 +189,52 @@ func runStats() {
 	fmt.Println("=== Index Statistics ===")
 	fmt.Printf("Documents in database: %d\n", dbCount)
 	fmt.Printf("Documents in index:    %d\n", indexCount)
+}
+
+func runReindex() {
+	fmt.Println("Rebuilding search index from database...")
+	fmt.Println()
+
+	// Open database
+	db, err := storage.Open(dbPath)
+	if err != nil {
+		log.Fatalf("Error opening database: %v", err)
+	}
+	defer db.Close()
+
+	// Open search index
+	idx, err := search.Open(indexPath)
+	if err != nil {
+		log.Fatalf("Error opening search index: %v", err)
+	}
+	defer idx.Close()
+
+	// Get document count
+	dbCount, err := db.Count()
+	if err != nil {
+		log.Fatalf("Error getting database count: %v", err)
+	}
+
+	fmt.Printf("Found %d documents in database\n", dbCount)
+	fmt.Println("Clearing and rebuilding index...")
+
+	// Rebuild index
+	startTime := time.Now()
+	if err := idx.Rebuild(db); err != nil {
+		log.Fatalf("Error rebuilding index: %v", err)
+	}
+	duration := time.Since(startTime)
+
+	// Get new index count
+	indexCount, err := idx.Count()
+	if err != nil {
+		log.Fatalf("Error getting index count: %v", err)
+	}
+
+	fmt.Println()
+	fmt.Println("=== Reindex Complete ===")
+	fmt.Printf("Documents indexed: %d\n", indexCount)
+	fmt.Printf("Duration:          %v\n", duration)
 }
 
 func getToken() string {

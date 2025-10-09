@@ -173,3 +173,65 @@ func (i *Index) IndexFromStorage(db *storage.DB) error {
 func (i *Index) Count() (uint64, error) {
 	return i.index.DocCount()
 }
+
+// Rebuild completely rebuilds the index from storage
+// This is useful when changing index configuration or fixing corruption
+func (i *Index) Rebuild(db *storage.DB) error {
+	// Get all documents first
+	docs, err := db.List(false) // Don't include archived
+	if err != nil {
+		return fmt.Errorf("list documents: %w", err)
+	}
+
+	// Delete all documents from index
+	docCount, err := i.index.DocCount()
+	if err != nil {
+		return fmt.Errorf("get doc count: %w", err)
+	}
+
+	if docCount > 0 {
+		// Query all document IDs
+		query := bleve.NewMatchAllQuery()
+		search := bleve.NewSearchRequest(query)
+		search.Size = int(docCount)
+		search.Fields = []string{} // Only need IDs
+
+		results, err := i.index.Search(search)
+		if err != nil {
+			return fmt.Errorf("query existing docs: %w", err)
+		}
+
+		// Delete all existing documents
+		batch := i.index.NewBatch()
+		for _, hit := range results.Hits {
+			batch.Delete(hit.ID)
+		}
+		if err := i.index.Batch(batch); err != nil {
+			return fmt.Errorf("delete existing docs: %w", err)
+		}
+	}
+
+	// Index all documents from storage
+	batch := i.index.NewBatch()
+	for _, doc := range docs {
+		indexDoc := &IndexedDocument{
+			ID:          doc.ID,
+			Title:       doc.Title,
+			Content:     doc.Content,
+			Author:      doc.AuthorName,
+			PublishedAt: doc.PublishedAt,
+			UpdatedAt:   doc.UpdatedAt,
+			SlabURL:     doc.SlabURL,
+		}
+
+		if err := batch.Index(indexDoc.ID, indexDoc); err != nil {
+			return fmt.Errorf("batch index %s: %w", doc.ID, err)
+		}
+	}
+
+	if err := i.index.Batch(batch); err != nil {
+		return fmt.Errorf("commit batch: %w", err)
+	}
+
+	return nil
+}
