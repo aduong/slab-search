@@ -79,42 +79,46 @@ Build a custom search layer that periodically syncs documents from Slab and prov
 ### 3.1 Architecture Overview
 
 ```
-┌─────────────────────────────────────────────────────┐
-│                    Slab GraphQL API                 │
-└──────────────────────┬──────────────────────────────┘
-                       │ 
-                       │ Daily Sync (Cron/Scheduler)
-                       ▼
-┌─────────────────────────────────────────────────────┐
-│                   Sync Worker                       │
-│  • Fetch document list via GraphQL                  │
-│  • Compare checksums for changes                    │
-│  • Download modified documents (Markdown)           │
-│  • Update search index and metadata                 │
-└──────────────┬───────────────────┬──────────────────┘
-               │                   │
-               ▼                   ▼
-    ┌──────────────────┐  ┌──────────────────┐
-    │   SQLite DB      │  │  Search Index    │
-    │                  │  │    (Bleve)       │
-    │ • Metadata       │  │                  │
-    │ • Checksums      │  │ • Full-text      │
-    │ • Markdown       │  │ • Fuzzy match    │
-    │ • Sync state     │  │ • Phrase search  │
-    └──────────────────┘  └──────────────────┘
-               ▲                   ▲
-               │                   │
-               └───────┬───────────┘
-                       │
-┌─────────────────────────────────────────────────────┐
-│                  Web Server (Go)                    │
-│  • Search API endpoint                              │
-│  • Web UI (Go templates + HTMX)                     │
-│  • Static asset serving                             │
-└─────────────────────────────────────────────────────┘
-                       ▲
-                       │
-                  [Web Browser]
+┌───────────────────────────────────────────────────────────┐
+│                    Slab API                               │
+│  • GraphQL: https://slab.render.com/graphql               │
+│  • Markdown Export: /posts/{id}/export/markdown           │
+└───────────────────────┬───────────────────────────────────┘
+                        │
+                        │ Daily Sync (Cron/Scheduler)
+                        ▼
+┌───────────────────────────────────────────────────────────┐
+│                   Sync Worker                             │
+│  1. Search posts via GraphQL (discover IDs)               │
+│  2. Fetch metadata via GraphQL (batched)                  │
+│  3. Download markdown via HTTP (concurrent)               │
+│  4. Compare content hashes for changes                    │
+│  5. Update database and search index                      │
+└──────────────┬─────────────────────┬──────────────────────┘
+               │                     │
+               ▼                     ▼
+    ┌──────────────────┐  ┌──────────────────────┐
+    │   SQLite DB      │  │  Search Index        │
+    │                  │  │    (Bleve)           │
+    │ • Metadata       │  │                      │
+    │ • Content hashes │  │ • Full-text          │
+    │ • Markdown       │  │ • Fuzzy match        │
+    │ • Embeddings     │  │ • Phrase search      │
+    │ • Sync state     │  │ • Semantic (hybrid)  │
+    └──────────────────┘  └──────────────────────┘
+               ▲                     ▲
+               │                     │
+               └─────────┬───────────┘
+                         │
+┌───────────────────────────────────────────────────────────┐
+│                  Web Server (Go)                          │
+│  • Search API endpoint (keyword + semantic)               │
+│  • Web UI (Go templates + HTMX)                           │
+│  • Static asset serving                                   │
+└───────────────────────────────────────────────────────────┘
+                         ▲
+                         │
+                    [Web Browser]
 ```
 
 ### 3.2 Technology Stack
@@ -122,10 +126,12 @@ Build a custom search layer that periodically syncs documents from Slab and prov
 #### Core Technologies
 - **Language**: Go 1.21+
 - **Search Index**: Bleve (native Go, no dependencies)
-- **Database**: SQLite with FTS5 extension (metadata and content storage)
+- **Database**: SQLite (metadata and content storage)
 - **Web Framework**: Standard library net/http + Chi router
 - **UI**: Go templates + HTMX for interactivity
-- **GraphQL Client**: github.com/machinebox/graphql
+- **API Client**:
+  - GraphQL: Standard net/http (simple POST requests)
+  - Markdown: Standard net/http GET with JWT auth
 
 #### Development Tools
 - **Configuration**: Viper for config management
@@ -141,20 +147,25 @@ Build a custom search layer that periodically syncs documents from Slab and prov
 CREATE TABLE documents (
     id TEXT PRIMARY KEY,
     title TEXT NOT NULL,
-    content TEXT NOT NULL,        -- Compressed Markdown
-    content_hash TEXT NOT NULL,   -- For change detection
+    content TEXT NOT NULL,        -- Markdown from export endpoint
+    content_hash TEXT NOT NULL,   -- MD5 hash for change detection
     author_name TEXT,
-    slab_url TEXT NOT NULL,
-    topics TEXT,                  -- JSON array
+    author_email TEXT,
+    slab_url TEXT NOT NULL,       -- https://slab.render.com/posts/{id}
+    topics TEXT,                  -- JSON array of {id, name}
     published_at TIMESTAMP,
     updated_at TIMESTAMP,
-    embedding TEXT                -- JSON array for semantic search
+    archived_at TIMESTAMP,        -- NULL if not archived
+    synced_at TIMESTAMP NOT NULL  -- When we last synced this doc
+    -- embedding field added in Phase 2 for semantic search
 );
 
 -- Indexes for common query patterns
 CREATE INDEX idx_author ON documents(author_name);
 CREATE INDEX idx_published ON documents(published_at);
 CREATE INDEX idx_updated ON documents(updated_at);
+CREATE INDEX idx_archived ON documents(archived_at);
+CREATE INDEX idx_synced ON documents(synced_at);
 ```
 
 #### Sync State (JSON file)
@@ -186,32 +197,55 @@ type IndexedDocument struct {
 }
 ```
 
-#### Semantic Search Implementation
+#### Search Implementation (MVP)
 ```go
-// Brute-force vector similarity (good for <50k documents)
-type SemanticSearcher struct {
-    cache map[string][]float32  // Document ID -> embedding
-    mu    sync.RWMutex          // Thread-safe cache
+// Bleve index configuration
+type SearchIndex struct {
+    index bleve.Index
 }
 
-// Hybrid search combines keyword and semantic results
-type HybridResult struct {
-    DocumentID    string
-    KeywordScore  float64  // From Bleve
-    SemanticScore float64  // Cosine similarity
-    FinalScore    float64  // Weighted combination
+// Document structure for indexing
+type IndexedDocument struct {
+    ID          string
+    Title       string    // Boosted field (weight: 3.0)
+    Content     string    // Standard field
+    Author      string    // Facet field
+    Topics      []string  // Facet field
+    PublishDate time.Time
+    UpdateDate  time.Time
 }
+
+// Query with fuzzy matching
+func (s *SearchIndex) Search(query string, limit int) ([]Result, error) {
+    q := bleve.NewQueryStringQuery(query)
+    req := bleve.NewSearchRequest(q)
+    req.Size = limit
+    req.Highlight = bleve.NewHighlight()
+    return s.index.Search(req)
+}
+```
+
+#### Semantic Search (Phase 2)
+```go
+// Deferred to Phase 2 - Add hybrid search with embeddings later
+// Will use brute-force cosine similarity for <50k documents
 ```
 
 ### 3.4 Component Design
 
 #### Sync Worker
-- **Responsibilities**: Fetch documents, detect changes, update storage
-- **Sync Strategy**: 
-  - Phase 1: Full sync daily (fetch all, compare checksums)
-  - Phase 2: Incremental sync using GraphQL changes endpoint
-- **Error Handling**: Exponential backoff, partial sync recovery
-- **Monitoring**: Log sync duration, document count, errors
+- **Responsibilities**: Discover posts, fetch content, detect changes, update storage
+- **Sync Strategy**:
+  - **Discovery**: Use GraphQL search with pagination to find all post IDs
+  - **Metadata**: Batch fetch post metadata (title, dates, author) via GraphQL
+  - **Content**: Concurrently fetch markdown via `/posts/{id}/export/markdown`
+  - **Change Detection**: Compare MD5 hash of content
+  - **Optimization**: Only fetch markdown for posts with changed `updatedAt`
+- **Performance**:
+  - Parallel markdown fetching (10-20 concurrent workers)
+  - Expected sync time: ~2 seconds per 100 posts
+- **Error Handling**: Exponential backoff, partial sync recovery, continue on individual failures
+- **Monitoring**: Log sync duration, document count, errors, API rate limits
 
 #### Search Service
 - **Index Management**: Build, update, and optimize Bleve index
@@ -236,28 +270,34 @@ type HybridResult struct {
 ```yaml
 # config.yaml example
 slab:
-  api_token: ${SLAB_API_TOKEN}
-  api_url: "https://your-org.slab.com/graphql"
-  
+  jwt_token: ${SLAB_JWT_TOKEN}              # JWT for authentication
+  graphql_url: "https://slab.render.com/graphql"
+  base_url: "https://slab.render.com"
+
 storage:
   data_dir: "./data"
   sqlite_db: "./data/slab.db"
   index_dir: "./data/bleve"
-  compress_content: true
-  
+
 sync:
-  schedule: "0 2 * * *"  # 2 AM daily
-  batch_size: 100
+  schedule: "0 2 * * *"        # 2 AM daily
+  concurrency: 10              # Parallel markdown fetches
   timeout: 1800s
-  
+  include_archived: false      # Skip archived posts
+
 server:
   port: 8080
   host: "localhost"
-  
+
 search:
   max_results: 50
   snippet_length: 200
   highlight_tag: "<mark>"
+
+embeddings:
+  enabled: true                # Enable semantic search
+  model: "local"               # "local" or "openai"
+  dimension: 384               # For local model
 ```
 
 ### 3.6 Deployment Options
@@ -299,24 +339,27 @@ services:
 ## 4. Implementation Phases
 
 ### Phase 1: MVP (Week 1-2)
-- [ ] Basic Slab GraphQL client
-- [ ] SQLite storage with single documents table
-- [ ] Bleve index implementation for keyword search
-- [ ] Embedding generation (OpenAI API or local model)
-- [ ] Brute-force semantic search with in-memory cache
-- [ ] Hybrid search scoring (keyword + semantic)
+- [ ] Slab API client (GraphQL + HTTP markdown export)
+- [ ] Topic iteration for post discovery
+- [ ] SQLite storage with documents table
+- [ ] Bleve index with fuzzy matching
+- [ ] Markdown content indexing
+- [ ] Manual sync command: `slab-search sync`
+- [ ] CLI search: `slab-search search "query"`
 - [ ] Simple web UI with search (Go templates + HTMX)
-- [ ] Manual sync command with JSON state file
-- [ ] Basic documentation
+- [ ] Content hash-based change detection
+- [ ] Basic logging and error handling
 
 ### Phase 2: Enhancement (Week 3-4)
+- [ ] Semantic search with local embeddings (all-MiniLM-L6-v2)
+- [ ] Hybrid scoring (keyword + semantic)
 - [ ] Author and date filtering
 - [ ] Improved UI with HTMX interactivity
-- [ ] Automated daily sync
-- [ ] Search result highlighting
+- [ ] Automated daily sync (cron/scheduler)
+- [ ] Search result highlighting improvements
 - [ ] Performance optimizations
-- [ ] Evaluate sqlite-vss if brute-force >500ms
-- [ ] Monitoring and logging
+- [ ] Incremental sync (only changed docs)
+- [ ] Monitoring dashboard
 
 ### Phase 3: Production (Week 5-6)
 - [ ] Incremental sync using changes API
@@ -393,24 +436,85 @@ services:
 - Reduced duplicate document creation
 - Better knowledge sharing across teams
 
-## Appendix A: Slab GraphQL Schema (Relevant Parts)
+## Appendix A: Slab GraphQL Queries (Actual)
 
+### Search Posts (Discovery)
 ```graphql
-# To be documented after API exploration
+query SearchPosts($query: String!, $first: Int, $after: String) {
+  search(query: $query, first: $first, after: $after) {
+    edges {
+      node {
+        ... on PostSearchResult {
+          post {
+            id
+            title
+            publishedAt
+            updatedAt
+            archivedAt
+          }
+        }
+      }
+      cursor
+    }
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+  }
+}
+```
+
+### Get Single Post (Metadata)
+```graphql
+query GetPost($id: ID!) {
+  post(id: $id) {
+    id
+    title
+    publishedAt
+    updatedAt
+    archivedAt
+    owner {
+      id
+      name
+      email
+    }
+    topics {
+      id
+      name
+    }
+  }
+}
+```
+
+### Fetch Markdown Content (HTTP)
+```
+GET https://slab.render.com/posts/{id}/export/markdown
+Authorization: Bearer {jwt_token}
+
+Returns: text/markdown
+```
+
+### Key Types
+```typescript
 type Post {
   id: ID!
   title: String!
-  content: String!
-  author: User!
-  topics: [Topic!]
-  publishedAt: DateTime
-  updatedAt: DateTime
+  publishedAt: Datetime
+  updatedAt: Datetime
+  archivedAt: Datetime
+  owner: User
+  topics: [Topic!]!
 }
 
-type Query {
-  posts(first: Int, after: String): PostConnection!
-  post(id: ID!): Post
-  changes(since: DateTime): [Change!]
+type PostSearchResult {
+  title: String          // HTML with <em> highlights
+  highlight: String      // JSON showing match positions
+  post: Post!
+}
+
+type SearchResultConnection {
+  edges: [SearchResultEdge!]!
+  pageInfo: PageInfo!
 }
 ```
 
