@@ -57,21 +57,25 @@ func Open(path string) (*Index, error) {
 	return &Index{index: idx}, nil
 }
 
-// buildIndexMapping creates a custom index mapping with title boosting
+// buildIndexMapping creates a custom index mapping with improved analyzers
 func buildIndexMapping() mapping.IndexMapping {
-	// Create a text field mapping with standard analyzer
-	textFieldMapping := bleve.NewTextFieldMapping()
+	// Content field - use English analyzer for better stemming and stopword removal
+	contentFieldMapping := bleve.NewTextFieldMapping()
+	contentFieldMapping.Analyzer = "en"
 
-	// Create a boosted text field for titles (3x weight)
+	// Title field - use English analyzer (boost applied at query time)
 	titleFieldMapping := bleve.NewTextFieldMapping()
-	titleFieldMapping.Analyzer = "en" // English analyzer for better stemming
+	titleFieldMapping.Analyzer = "en"
+
+	// Author field - keep default analyzer (good for names, no stemming)
+	authorFieldMapping := bleve.NewTextFieldMapping()
 
 	// Create document mapping
 	docMapping := bleve.NewDocumentMapping()
 	docMapping.AddFieldMappingsAt("ID", bleve.NewTextFieldMapping())
 	docMapping.AddFieldMappingsAt("Title", titleFieldMapping)
-	docMapping.AddFieldMappingsAt("Content", textFieldMapping)
-	docMapping.AddFieldMappingsAt("Author", bleve.NewTextFieldMapping())
+	docMapping.AddFieldMappingsAt("Content", contentFieldMapping)
+	docMapping.AddFieldMappingsAt("Author", authorFieldMapping)
 	docMapping.AddFieldMappingsAt("SlabURL", bleve.NewTextFieldMapping())
 
 	// Create index mapping
