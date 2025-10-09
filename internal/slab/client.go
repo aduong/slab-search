@@ -93,43 +93,12 @@ func (c *Client) doGraphQL(ctx context.Context, query string, variables map[stri
 	return nil
 }
 
-// GetTopics fetches all topics from the organization
+// GetTopics fetches all topics via currentSession
 func (c *Client) GetTopics(ctx context.Context) ([]Topic, error) {
 	query := `
 	{
-		organization {
-			topics {
-				id
-				name
-			}
-		}
-	}
-	`
-
-	var result struct {
-		Organization struct {
-			Topics []Topic `json:"topics"`
-		} `json:"organization"`
-	}
-
-	if err := c.doGraphQL(ctx, query, nil, &result); err != nil {
-		return nil, fmt.Errorf("get topics: %w", err)
-	}
-
-	return result.Organization.Topics, nil
-}
-
-// GetTopicPosts fetches all posts for a given topic
-func (c *Client) GetTopicPosts(ctx context.Context, topicID string) ([]SlimPost, error) {
-	query := `
-	query GetTopicPosts($topicId: ID!) {
-		topic(id: $topicId) {
-			posts {
-				id
-				title
-				publishedAt
-				updatedAt
-				archivedAt
+		currentSession {
+			organization {
 				topics {
 					id
 					name
@@ -140,20 +109,106 @@ func (c *Client) GetTopicPosts(ctx context.Context, topicID string) ([]SlimPost,
 	`
 
 	var result struct {
+		CurrentSession struct {
+			Organization struct {
+				Topics []Topic `json:"topics"`
+			} `json:"organization"`
+		} `json:"currentSession"`
+	}
+
+	if err := c.doGraphQL(ctx, query, nil, &result); err != nil {
+		return nil, fmt.Errorf("get topics: %w", err)
+	}
+
+	return result.CurrentSession.Organization.Topics, nil
+}
+
+// GetAllSlimPosts fetches all posts via currentSession
+func (c *Client) GetAllSlimPosts(ctx context.Context) ([]SlimPost, error) {
+	query := `
+	{
+		currentSession {
+			organization {
+				posts {
+					id
+					title
+					publishedAt
+					updatedAt
+					archivedAt
+					topics {
+						id
+						name
+					}
+				}
+			}
+		}
+	}
+	`
+
+	var result struct {
+		CurrentSession struct {
+			Organization struct {
+				Posts []SlimPost `json:"posts"`
+			} `json:"organization"`
+		} `json:"currentSession"`
+	}
+
+	if err := c.doGraphQL(ctx, query, nil, &result); err != nil {
+		return nil, fmt.Errorf("get all posts: %w", err)
+	}
+
+	return result.CurrentSession.Organization.Posts, nil
+}
+
+// GetTopicPosts fetches all posts for a given topic
+func (c *Client) GetTopicPosts(ctx context.Context, topicID string) ([]SlimPost, error) {
+	query := `
+	query GetTopicPosts($topicId: ID!, $first: Int) {
+		topic(id: $topicId) {
+			posts(first: $first) {
+				edges {
+					node {
+						id
+						title
+						publishedAt
+						updatedAt
+						archivedAt
+						topics {
+							id
+							name
+						}
+					}
+				}
+			}
+		}
+	}
+	`
+
+	var result struct {
 		Topic struct {
-			Posts []SlimPost `json:"posts"`
+			Posts struct {
+				Edges []struct {
+					Node SlimPost `json:"node"`
+				} `json:"edges"`
+			} `json:"posts"`
 		} `json:"topic"`
 	}
 
 	variables := map[string]interface{}{
 		"topicId": topicID,
+		"first":   100, // Fetch up to 100 posts per topic
 	}
 
 	if err := c.doGraphQL(ctx, query, variables, &result); err != nil {
 		return nil, fmt.Errorf("get topic posts: %w", err)
 	}
 
-	return result.Topic.Posts, nil
+	var posts []SlimPost
+	for _, edge := range result.Topic.Posts.Edges {
+		posts = append(posts, edge.Node)
+	}
+
+	return posts, nil
 }
 
 // GetPost fetches full metadata for a single post

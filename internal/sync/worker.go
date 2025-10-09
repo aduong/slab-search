@@ -111,7 +111,7 @@ func (w *Worker) Sync(ctx context.Context) (*Stats, error) {
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 
-	for i := 0; i < concurrency; i++ {
+	for range concurrency {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
