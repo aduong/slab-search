@@ -1,0 +1,423 @@
+# Slab Search Enhancement - Project Specification
+
+## 1. Executive Summary
+
+### Problem Statement
+Slab's native search functionality is inadequate for finding relevant documents quickly, reducing the value of our knowledge base. With approximately 10,000 documents accumulated over 7 years, employees struggle to locate important information, leading to duplicated work and lost institutional knowledge.
+
+### Proposed Solution
+Build a custom search layer that periodically syncs documents from Slab and provides fast, accurate full-text search with fuzzy matching and phrase search capabilities. The system will start as a local tool and can evolve into a hosted service shared across the organization.
+
+### Success Criteria
+- Search results return in under 1 second for 95% of queries
+- Relevant documents appear in top 5 results for 80% of searches
+- System successfully indexes 100% of accessible Slab documents
+- Daily sync completes within 30 minutes
+
+## 2. Product Requirements
+
+### 2.1 User Stories
+
+**As a team member, I want to:**
+- Search for documents containing specific phrases or keywords
+- Find documents even when I misspell search terms
+- Filter results by author when I know who wrote something
+- See a preview of matching content to assess relevance
+- Access the original document in Slab with one click
+- Search for recent documents by date range
+
+### 2.2 Functional Requirements
+
+#### Core Features (MVP)
+- **Full-text search**: Search across document titles and content
+- **Fuzzy matching**: Find results despite typos (e.g., "deployement" finds "deployment")
+- **Phrase search**: Search for exact phrases using quotes
+- **Semantic search**: Find conceptually related content using embeddings
+- **Hybrid scoring**: Combine keyword and semantic search for best results
+- **Result preview**: Display document title, author, date, and text snippet with highlighted matches
+- **Direct linking**: Each result links to the original Slab document
+- **Daily sync**: Automatic synchronization of all accessible documents
+
+#### Enhanced Features (Phase 2)
+- **Author filtering**: Narrow results by document author
+- **Date filtering**: Filter by publish or update date ranges
+- **Incremental sync**: Only sync changed documents for efficiency
+- **Topic filtering**: Filter by Slab topics/tags
+- **Performance optimizations**: Add sqlite-vss if needed for vector search
+
+#### Future Considerations (Phase 3)
+- **Search analytics**: Track popular searches and click-through rates
+- **Saved searches**: Allow users to save and share search queries
+- **API access**: Enable programmatic search for integrations
+
+### 2.3 Non-Functional Requirements
+
+#### Performance
+- Search response time: < 1 second for 95% of queries
+- Sync performance: Complete daily sync in < 30 minutes
+- Storage efficiency: Compress markdown content (target < 1GB for 10,000 docs)
+- Concurrent users: Support 10 simultaneous searches (local), 50 (hosted)
+
+#### Reliability
+- Sync resilience: Continue operation if sync fails, use last known good data
+- Error handling: Graceful degradation when Slab API is unavailable
+- Data consistency: Verify document integrity after sync
+
+#### Usability
+- Zero configuration for end users
+- Self-explanatory search interface
+- Mobile-responsive web design
+- Keyboard shortcuts for power users (e.g., `/` to focus search)
+
+#### Security
+- Respect Slab access controls (only index public/accessible documents)
+- No storage of sensitive credentials in code
+- Optional authentication for hosted version
+
+## 3. Technical Specification
+
+### 3.1 Architecture Overview
+
+```
+┌─────────────────────────────────────────────────────┐
+│                    Slab GraphQL API                 │
+└──────────────────────┬──────────────────────────────┘
+                       │ 
+                       │ Daily Sync (Cron/Scheduler)
+                       ▼
+┌─────────────────────────────────────────────────────┐
+│                   Sync Worker                       │
+│  • Fetch document list via GraphQL                  │
+│  • Compare checksums for changes                    │
+│  • Download modified documents (Markdown)           │
+│  • Update search index and metadata                 │
+└──────────────┬───────────────────┬──────────────────┘
+               │                   │
+               ▼                   ▼
+    ┌──────────────────┐  ┌──────────────────┐
+    │   SQLite DB      │  │  Search Index    │
+    │                  │  │    (Bleve)       │
+    │ • Metadata       │  │                  │
+    │ • Checksums      │  │ • Full-text      │
+    │ • Markdown       │  │ • Fuzzy match    │
+    │ • Sync state     │  │ • Phrase search  │
+    └──────────────────┘  └──────────────────┘
+               ▲                   ▲
+               │                   │
+               └───────┬───────────┘
+                       │
+┌─────────────────────────────────────────────────────┐
+│                  Web Server (Go)                    │
+│  • Search API endpoint                              │
+│  • Web UI (Go templates + HTMX)                     │
+│  • Static asset serving                             │
+└─────────────────────────────────────────────────────┘
+                       ▲
+                       │
+                  [Web Browser]
+```
+
+### 3.2 Technology Stack
+
+#### Core Technologies
+- **Language**: Go 1.21+
+- **Search Index**: Bleve (native Go, no dependencies)
+- **Database**: SQLite with FTS5 extension (metadata and content storage)
+- **Web Framework**: Standard library net/http + Chi router
+- **UI**: Go templates + HTMX for interactivity
+- **GraphQL Client**: github.com/machinebox/graphql
+
+#### Development Tools
+- **Configuration**: Viper for config management
+- **Logging**: Zerolog or Zap for structured logging
+- **Testing**: Standard library + Testify for assertions
+- **Migration**: golang-migrate for database schemas
+
+### 3.3 Data Models
+
+#### SQLite Schema
+```sql
+-- Single documents table (all we need for MVP)
+CREATE TABLE documents (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    content TEXT NOT NULL,        -- Compressed Markdown
+    content_hash TEXT NOT NULL,   -- For change detection
+    author_name TEXT,
+    slab_url TEXT NOT NULL,
+    topics TEXT,                  -- JSON array
+    published_at TIMESTAMP,
+    updated_at TIMESTAMP,
+    embedding TEXT                -- JSON array for semantic search
+);
+
+-- Indexes for common query patterns
+CREATE INDEX idx_author ON documents(author_name);
+CREATE INDEX idx_published ON documents(published_at);
+CREATE INDEX idx_updated ON documents(updated_at);
+```
+
+#### Sync State (JSON file)
+```json
+// data/sync_state.json
+{
+  "last_sync_at": "2024-01-20T02:00:00Z",
+  "last_success_at": "2024-01-20T02:00:00Z",
+  "documents_synced": 9847,
+  "sync_duration_ms": 124000,
+  "error": null,
+  "partial_progress": {
+    "last_processed_id": "doc_xyz123",
+    "processed_count": 5000
+  }
+}
+```
+
+#### Bleve Index Structure
+```go
+type IndexedDocument struct {
+    ID          string
+    Title       string    // Boosted field
+    Content     string    // Main search field
+    Author      string    // Facet field
+    Topics      []string  // Facet field
+    PublishDate time.Time // Date range field
+    UpdateDate  time.Time // Date range field
+}
+```
+
+#### Semantic Search Implementation
+```go
+// Brute-force vector similarity (good for <50k documents)
+type SemanticSearcher struct {
+    cache map[string][]float32  // Document ID -> embedding
+    mu    sync.RWMutex          // Thread-safe cache
+}
+
+// Hybrid search combines keyword and semantic results
+type HybridResult struct {
+    DocumentID    string
+    KeywordScore  float64  // From Bleve
+    SemanticScore float64  // Cosine similarity
+    FinalScore    float64  // Weighted combination
+}
+```
+
+### 3.4 Component Design
+
+#### Sync Worker
+- **Responsibilities**: Fetch documents, detect changes, update storage
+- **Sync Strategy**: 
+  - Phase 1: Full sync daily (fetch all, compare checksums)
+  - Phase 2: Incremental sync using GraphQL changes endpoint
+- **Error Handling**: Exponential backoff, partial sync recovery
+- **Monitoring**: Log sync duration, document count, errors
+
+#### Search Service
+- **Index Management**: Build, update, and optimize Bleve index
+- **Query Processing**: Parse user input, handle operators, apply filters
+- **Ranking**: Title matches weighted higher than content
+- **Highlighting**: Return snippets with matched terms highlighted
+
+#### Web Interface
+- **Endpoints**:
+  - `GET /` - Search page
+  - `GET /api/search?q=...` - Search API
+  - `GET /api/stats` - System statistics
+  - `GET /health` - Health check endpoint
+- **UI Components**:
+  - Search bar with real-time suggestions
+  - Result cards with previews
+  - Filter sidebar (author, date, topics)
+  - Pagination or infinite scroll
+
+### 3.5 Configuration
+
+```yaml
+# config.yaml example
+slab:
+  api_token: ${SLAB_API_TOKEN}
+  api_url: "https://your-org.slab.com/graphql"
+  
+storage:
+  data_dir: "./data"
+  sqlite_db: "./data/slab.db"
+  index_dir: "./data/bleve"
+  compress_content: true
+  
+sync:
+  schedule: "0 2 * * *"  # 2 AM daily
+  batch_size: 100
+  timeout: 1800s
+  
+server:
+  port: 8080
+  host: "localhost"
+  
+search:
+  max_results: 50
+  snippet_length: 200
+  highlight_tag: "<mark>"
+```
+
+### 3.6 Deployment Options
+
+#### Local Deployment
+```bash
+# Single binary
+./slab-search server --config=./config.yaml
+
+# Or using systemd service
+systemctl start slab-search
+```
+
+#### Hosted Deployment (Render)
+```yaml
+# render.yaml
+services:
+  - type: web
+    name: slab-search
+    env: go
+    buildCommand: go build -o app ./cmd/server
+    startCommand: ./app
+    envVars:
+      - key: SLAB_API_TOKEN
+        sync: false
+    disk:
+      name: data
+      mountPath: /data
+      sizeGB: 10
+
+  - type: cron
+    name: slab-search-sync
+    env: go
+    buildCommand: go build -o sync ./cmd/sync
+    startCommand: ./sync
+    schedule: "@daily"
+```
+
+## 4. Implementation Phases
+
+### Phase 1: MVP (Week 1-2)
+- [ ] Basic Slab GraphQL client
+- [ ] SQLite storage with single documents table
+- [ ] Bleve index implementation for keyword search
+- [ ] Embedding generation (OpenAI API or local model)
+- [ ] Brute-force semantic search with in-memory cache
+- [ ] Hybrid search scoring (keyword + semantic)
+- [ ] Simple web UI with search (Go templates + HTMX)
+- [ ] Manual sync command with JSON state file
+- [ ] Basic documentation
+
+### Phase 2: Enhancement (Week 3-4)
+- [ ] Author and date filtering
+- [ ] Improved UI with HTMX interactivity
+- [ ] Automated daily sync
+- [ ] Search result highlighting
+- [ ] Performance optimizations
+- [ ] Evaluate sqlite-vss if brute-force >500ms
+- [ ] Monitoring and logging
+
+### Phase 3: Production (Week 5-6)
+- [ ] Incremental sync using changes API
+- [ ] Deployment to Render
+- [ ] Authentication (if needed)
+- [ ] Search analytics dashboard
+- [ ] Admin interface
+- [ ] Load testing
+
+## 5. Testing Strategy
+
+### Unit Tests
+- Slab client GraphQL queries
+- Search index operations
+- Document storage and retrieval
+- Query parsing and filtering
+
+### Integration Tests
+- Full sync workflow
+- Search accuracy with test corpus
+- Web UI interaction flows
+- Error recovery scenarios
+
+### Performance Tests
+- Search latency with 10,000 documents
+- Sync duration and resource usage
+- Concurrent user load
+- Index size and memory footprint
+
+## 6. Monitoring and Metrics
+
+### Key Metrics
+- Search latency (p50, p95, p99)
+- Sync success rate
+- Documents indexed
+- Query volume and patterns
+- Error rates by component
+
+### Alerting Thresholds
+- Sync failure > 2 consecutive days
+- Search latency p95 > 2 seconds
+- Disk usage > 80%
+- Memory usage > 2GB
+
+## 7. Risks and Mitigations
+
+| Risk | Impact | Probability | Mitigation |
+|------|--------|-------------|------------|
+| Slab API changes | High | Low | Version lock API client, monitor deprecations |
+| Data volume growth | Medium | Medium | Implement data retention, optimize compression |
+| Search quality issues | High | Medium | A/B test with users, collect feedback |
+| Sync performance degradation | Medium | Medium | Implement incremental sync, parallel processing |
+| Security breach via search | High | Low | Respect Slab permissions, sanitize inputs |
+
+## 8. Open Questions
+
+1. Should we support search within specific Slab collections/folders?
+2. Do we need to handle document versioning/history?
+3. Should search queries be shareable via URL parameters?
+4. Is there a need for "advanced search" with complex boolean logic?
+5. Should we integrate with other tools (Slack notifications, browser extensions)?
+
+## 9. Success Metrics
+
+### Quantitative
+- 90% reduction in time to find documents
+- < 1 second average search response time
+- 100% of public documents indexed successfully
+- < 30 minute daily sync time
+
+### Qualitative
+- Positive user feedback on search relevance
+- Increased usage of historical documentation
+- Reduced duplicate document creation
+- Better knowledge sharing across teams
+
+## Appendix A: Slab GraphQL Schema (Relevant Parts)
+
+```graphql
+# To be documented after API exploration
+type Post {
+  id: ID!
+  title: String!
+  content: String!
+  author: User!
+  topics: [Topic!]
+  publishedAt: DateTime
+  updatedAt: DateTime
+}
+
+type Query {
+  posts(first: Int, after: String): PostConnection!
+  post(id: ID!): Post
+  changes(since: DateTime): [Change!]
+}
+```
+
+## Appendix B: Example Search Queries
+
+- `"deployment process"` - Exact phrase
+- `kubernetes deploy` - Multiple terms
+- `author:john monitoring` - Author filter
+- `updated:2024-01-01..2024-12-31 performance` - Date range
+- `topic:engineering latency` - Topic filter
