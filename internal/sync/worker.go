@@ -2,7 +2,6 @@ package sync
 
 import (
 	"context"
-	"crypto/md5"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -164,27 +163,23 @@ func (w *Worker) syncPost(ctx context.Context, slimPost *slab.SlimPost, stats *S
 		return fmt.Errorf("get markdown: %w", err)
 	}
 
-	// 3. Compute content hash
-	contentHash := fmt.Sprintf("%x", md5.Sum([]byte(markdown)))
-
-	// 4. Fetch full post metadata (for author info)
+	// 3. Fetch full post metadata (for author info)
 	post, err := w.slabClient.GetPost(ctx, slimPost.ID)
 	if err != nil {
 		return fmt.Errorf("get post metadata: %w", err)
 	}
 
-	// 5. Convert topics to JSON
+	// 4. Convert topics to JSON
 	topicsJSON, err := json.Marshal(slimPost.Topics)
 	if err != nil {
 		return fmt.Errorf("marshal topics: %w", err)
 	}
 
-	// 6. Create document
+	// 5. Create document
 	doc := &storage.Document{
 		ID:          slimPost.ID,
 		Title:       slimPost.Title,
 		Content:     markdown,
-		ContentHash: contentHash,
 		SlabURL:     fmt.Sprintf("https://slab.render.com/posts/%s", slimPost.ID),
 		Topics:      string(topicsJSON),
 		PublishedAt: slimPost.PublishedAt,
@@ -198,12 +193,12 @@ func (w *Worker) syncPost(ctx context.Context, slimPost *slab.SlimPost, stats *S
 		doc.AuthorEmail = post.Owner.Email
 	}
 
-	// 7. Store in database
+	// 6. Store in database
 	if err := w.db.Upsert(doc); err != nil {
 		return fmt.Errorf("upsert document: %w", err)
 	}
 
-	// 8. Index in search
+	// 7. Index in search
 	var topicNames []string
 	for _, t := range slimPost.Topics {
 		topicNames = append(topicNames, t.Name)
@@ -224,7 +219,7 @@ func (w *Worker) syncPost(ctx context.Context, slimPost *slab.SlimPost, stats *S
 		return fmt.Errorf("index document: %w", err)
 	}
 
-	// 9. Update stats
+	// 8. Update stats
 	mu.Lock()
 	if existingUpdatedAt.IsZero() {
 		stats.NewPosts++

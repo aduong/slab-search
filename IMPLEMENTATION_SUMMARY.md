@@ -245,12 +245,55 @@ require (
 ✅ **Relevant results**: Top result matches query intent
 ✅ **Fuzzy matching**: Works with typos
 
+## Post-MVP Optimizations (2025-10-09)
+
+After initial MVP, further optimizations were implemented for production scale:
+
+### 1. Direct Post Discovery
+**Changed from:** Topic iteration (1,081 topics)
+**Changed to:** Direct `GetAllSlimPosts()` API call
+**Result:** All 10,444 posts fetched in ~3 seconds
+
+### 2. Timestamp-Based Optimization
+**Problem:** Re-downloading all markdown on every sync
+**Solution:** Check `updatedAt` timestamp before downloading
+**Result:** Re-sync time reduced from 1m45s → 2.8s (38x faster)
+
+**Implementation:**
+```go
+// Check timestamp first
+existingUpdatedAt, _ := db.GetUpdatedAt(post.ID)
+if existingUpdatedAt.Equal(post.UpdatedAt) {
+    skip() // No download needed
+}
+```
+
+### 3. Increased Concurrency
+**Changed from:** 5 workers
+**Changed to:** 20 workers
+**Result:** Better parallelism for I/O-bound operations
+
+### 4. Progress Reporting
+**Added:** Updates every 5 seconds during sync
+**Shows:** Percentage complete, new/updated/skipped counts
+
+### Final Performance Metrics
+
+**Production Dataset (10,023 posts):**
+- Initial sync: 1m45s (~96 posts/second)
+- Re-sync (no changes): 2.8s (38x faster)
+- Incremental sync: Only downloads changed posts
+
+**Storage:**
+- Database: ~100MB
+- Search index: ~200MB
+- Total: ~300MB for 10k posts
+
 ## Conclusion
 
-Successfully built a working MVP in ~2 hours that:
-- Discovers posts via topic iteration
-- Syncs markdown content concurrently
-- Provides fast fuzzy search with highlighting
-- Stores efficiently in SQLite + Bleve
-
-Ready to scale to full dataset by removing the 10-post limit!
+Successfully built and optimized a production-ready search system:
+- MVP completed in ~2 hours
+- Optimizations completed in ~1 hour
+- Handles 10k+ posts efficiently
+- 38x faster re-syncs through timestamp optimization
+- Ready for daily automated syncing

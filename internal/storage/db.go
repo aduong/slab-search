@@ -50,7 +50,6 @@ func (d *DB) initSchema() error {
 		id TEXT PRIMARY KEY,
 		title TEXT NOT NULL,
 		content TEXT NOT NULL,
-		content_hash TEXT NOT NULL,
 		author_name TEXT,
 		author_email TEXT,
 		slab_url TEXT NOT NULL,
@@ -66,7 +65,6 @@ func (d *DB) initSchema() error {
 	CREATE INDEX IF NOT EXISTS idx_updated ON documents(updated_at);
 	CREATE INDEX IF NOT EXISTS idx_archived ON documents(archived_at);
 	CREATE INDEX IF NOT EXISTS idx_synced ON documents(synced_at);
-	CREATE INDEX IF NOT EXISTS idx_hash ON documents(content_hash);
 	`
 
 	_, err := d.db.Exec(schema)
@@ -77,13 +75,12 @@ func (d *DB) initSchema() error {
 func (d *DB) Upsert(doc *Document) error {
 	query := `
 	INSERT INTO documents (
-		id, title, content, content_hash, author_name, author_email,
+		id, title, content, author_name, author_email,
 		slab_url, topics, published_at, updated_at, archived_at, synced_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(id) DO UPDATE SET
 		title = excluded.title,
 		content = excluded.content,
-		content_hash = excluded.content_hash,
 		author_name = excluded.author_name,
 		author_email = excluded.author_email,
 		slab_url = excluded.slab_url,
@@ -95,7 +92,7 @@ func (d *DB) Upsert(doc *Document) error {
 	`
 
 	_, err := d.db.Exec(query,
-		doc.ID, doc.Title, doc.Content, doc.ContentHash, doc.AuthorName, doc.AuthorEmail,
+		doc.ID, doc.Title, doc.Content, doc.AuthorName, doc.AuthorEmail,
 		doc.SlabURL, doc.Topics, doc.PublishedAt, doc.UpdatedAt, doc.ArchivedAt, doc.SyncedAt,
 	)
 	return err
@@ -105,14 +102,14 @@ func (d *DB) Upsert(doc *Document) error {
 func (d *DB) Get(id string) (*Document, error) {
 	doc := &Document{}
 	query := `
-	SELECT id, title, content, content_hash, author_name, author_email,
+	SELECT id, title, content, author_name, author_email,
 	       slab_url, topics, published_at, updated_at, archived_at, synced_at
 	FROM documents
 	WHERE id = ?
 	`
 
 	err := d.db.QueryRow(query, id).Scan(
-		&doc.ID, &doc.Title, &doc.Content, &doc.ContentHash, &doc.AuthorName, &doc.AuthorEmail,
+		&doc.ID, &doc.Title, &doc.Content, &doc.AuthorName, &doc.AuthorEmail,
 		&doc.SlabURL, &doc.Topics, &doc.PublishedAt, &doc.UpdatedAt, &doc.ArchivedAt, &doc.SyncedAt,
 	)
 
@@ -129,7 +126,7 @@ func (d *DB) Get(id string) (*Document, error) {
 // List retrieves all documents (non-archived by default)
 func (d *DB) List(includeArchived bool) ([]*Document, error) {
 	query := `
-	SELECT id, title, content, content_hash, author_name, author_email,
+	SELECT id, title, content, author_name, author_email,
 	       slab_url, topics, published_at, updated_at, archived_at, synced_at
 	FROM documents
 	`
@@ -148,7 +145,7 @@ func (d *DB) List(includeArchived bool) ([]*Document, error) {
 	for rows.Next() {
 		doc := &Document{}
 		err := rows.Scan(
-			&doc.ID, &doc.Title, &doc.Content, &doc.ContentHash, &doc.AuthorName, &doc.AuthorEmail,
+			&doc.ID, &doc.Title, &doc.Content, &doc.AuthorName, &doc.AuthorEmail,
 			&doc.SlabURL, &doc.Topics, &doc.PublishedAt, &doc.UpdatedAt, &doc.ArchivedAt, &doc.SyncedAt,
 		)
 		if err != nil {
@@ -165,16 +162,6 @@ func (d *DB) Count() (int, error) {
 	var count int
 	err := d.db.QueryRow("SELECT COUNT(*) FROM documents WHERE archived_at IS NULL").Scan(&count)
 	return count, err
-}
-
-// GetContentHash retrieves just the content hash for a document
-func (d *DB) GetContentHash(id string) (string, error) {
-	var hash string
-	err := d.db.QueryRow("SELECT content_hash FROM documents WHERE id = ?", id).Scan(&hash)
-	if err == sql.ErrNoRows {
-		return "", nil
-	}
-	return hash, err
 }
 
 // GetUpdatedAt retrieves just the updated_at timestamp for a document

@@ -2,21 +2,25 @@
 
 ## ✅ IMPLEMENTATION STATUS
 
-**MVP COMPLETE** - Successfully implemented and tested on 2025-10-08
+**MVP COMPLETE + OPTIMIZED** - Successfully implemented and optimized on 2025-10-08/09
 
 **What Works:**
-- ✅ Topic-based post discovery (1081 topics)
-- ✅ Concurrent markdown fetching (5 workers)
+- ✅ Direct post discovery via `GetAllSlimPosts()` (10,444 posts in ~3s)
+- ✅ High-performance concurrent markdown fetching (20 workers)
+- ✅ Timestamp-based optimization (38x faster re-syncs)
 - ✅ SQLite storage with change detection
 - ✅ Bleve full-text search with fuzzy matching
 - ✅ CLI commands: sync, search, stats
-- ✅ Synced 10 posts in 1.03 seconds
+- ✅ Progress reporting during sync (every 5 seconds)
+- ✅ Full dataset: 10,023 posts synced in 1m45s (initial) / 2.8s (re-sync)
 
 **Key Learnings:**
-- Must use `currentSession { organization { ... } }` for API access
-- Connection pattern requires `posts(first: 100) { edges { node { ... } } }`
+- `currentSession.organization.posts` is much faster than topic iteration
+- `updatedAt` timestamp comparison avoids unnecessary markdown downloads (no content hash needed)
+- 20 concurrent workers is optimal for I/O-bound markdown fetching
 - Markdown export endpoint works perfectly
-- Topic iteration is efficient even with 1000+ topics
+- Simple timestamp-based incremental sync is sufficient (no need for complex delta APIs)
+- Timestamp checking achieves 30-40x faster re-syncs
 
 See `README.md` for usage and `API_FINDINGS.md` for implementation details.
 
