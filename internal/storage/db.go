@@ -3,6 +3,7 @@ package storage
 import (
 	"database/sql"
 	"fmt"
+	"time"
 
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -174,4 +175,15 @@ func (d *DB) GetContentHash(id string) (string, error) {
 		return "", nil
 	}
 	return hash, err
+}
+
+// GetUpdatedAt retrieves just the updated_at timestamp for a document
+// Returns zero time if document doesn't exist
+func (d *DB) GetUpdatedAt(id string) (time.Time, error) {
+	var updatedAt time.Time
+	err := d.db.QueryRow("SELECT updated_at FROM documents WHERE id = ?", id).Scan(&updatedAt)
+	if err == sql.ErrNoRows {
+		return time.Time{}, nil // Return zero time for non-existent docs
+	}
+	return updatedAt, err
 }

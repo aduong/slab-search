@@ -89,8 +89,8 @@ func runSync() {
 	}
 	defer idx.Close()
 
-	// Create sync worker (limit to 10 posts for MVP testing)
-	worker := sync.NewWorker(slabClient, db, idx, 10)
+	// Create sync worker (0 = unlimited)
+	worker := sync.NewWorker(slabClient, db, idx, 0)
 
 	// Run sync
 	ctx := context.Background()

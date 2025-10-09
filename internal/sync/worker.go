@@ -49,54 +49,37 @@ func (w *Worker) Sync(ctx context.Context) (*Stats, error) {
 
 	log.Println("Starting sync...")
 
-	// 1. Fetch all topics
-	log.Println("Fetching topics...")
-	topics, err := w.slabClient.GetTopics(ctx)
+	// 1. Fetch all posts via currentSession (much faster than topic iteration)
+	log.Println("Fetching all posts from Slab...")
+	allPostsSlice, err := w.slabClient.GetAllSlimPosts(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("get topics: %w", err)
+		return nil, fmt.Errorf("get all posts: %w", err)
 	}
-	log.Printf("Found %d topics\n", len(topics))
+	log.Printf("Found %d posts from Slab\n", len(allPostsSlice))
 
-	// 2. Collect posts from all topics
-	log.Println("Collecting posts from topics...")
-	allPosts := make(map[string]*slab.SlimPost) // Use map to dedupe
+	// 2. Filter and prepare posts
+	log.Println("Filtering posts...")
+	allPosts := make(map[string]*slab.SlimPost)
 	postCount := 0
 
-	for _, topic := range topics {
-		if w.maxPosts > 0 && postCount >= w.maxPosts {
-			log.Printf("Reached maxPosts limit (%d), stopping topic iteration\n", w.maxPosts)
-			break
-		}
-
-		posts, err := w.slabClient.GetTopicPosts(ctx, topic.ID)
-		if err != nil {
-			log.Printf("Warning: failed to get posts for topic %s: %v\n", topic.Name, err)
-			stats.Errors++
+	for i := range allPostsSlice {
+		// Skip archived posts
+		if allPostsSlice[i].ArchivedAt != nil {
 			continue
 		}
 
-		for i := range posts {
-			if w.maxPosts > 0 && postCount >= w.maxPosts {
-				break
-			}
-
-			// Skip archived posts
-			if posts[i].ArchivedAt != nil {
-				continue
-			}
-
-			// Deduplicate (posts can appear in multiple topics)
-			if _, exists := allPosts[posts[i].ID]; !exists {
-				allPosts[posts[i].ID] = &posts[i]
-				postCount++
-			}
+		// Apply maxPosts limit if set (for testing)
+		if w.maxPosts > 0 && postCount >= w.maxPosts {
+			log.Printf("Reached maxPosts limit (%d), stopping\n", w.maxPosts)
+			break
 		}
 
-		log.Printf("  %s: found %d posts\n", topic.Name, len(posts))
+		allPosts[allPostsSlice[i].ID] = &allPostsSlice[i]
+		postCount++
 	}
 
 	stats.TotalPosts = len(allPosts)
-	log.Printf("Total unique posts to sync: %d\n", stats.TotalPosts)
+	log.Printf("Total posts to sync: %d (excluding %d archived)\n", stats.TotalPosts, len(allPostsSlice)-len(allPosts))
 
 	// 3. Sync each post with concurrency
 	log.Println("Syncing posts...")
@@ -107,9 +90,28 @@ func (w *Worker) Sync(ctx context.Context) (*Stats, error) {
 	close(postChan)
 
 	// Use worker pool for concurrent syncing
-	concurrency := 5
+	concurrency := 20 // Increased from 5 for faster syncing
 	var wg sync.WaitGroup
 	var mu sync.Mutex
+	var processed int
+
+	// Progress reporting
+	totalPosts := len(allPosts)
+	progressTicker := time.NewTicker(5 * time.Second)
+	defer progressTicker.Stop()
+
+	go func() {
+		for range progressTicker.C {
+			mu.Lock()
+			current := processed
+			mu.Unlock()
+			if current > 0 && current < totalPosts {
+				percent := float64(current) / float64(totalPosts) * 100
+				log.Printf("Progress: %d/%d (%.1f%%) - %d new, %d updated, %d skipped, %d errors\n",
+					current, totalPosts, percent, stats.NewPosts, stats.UpdatedPosts, stats.SkippedPosts, stats.Errors)
+			}
+		}
+	}()
 
 	for range concurrency {
 		wg.Add(1)
@@ -122,6 +124,11 @@ func (w *Worker) Sync(ctx context.Context) (*Stats, error) {
 					stats.Errors++
 					mu.Unlock()
 				}
+
+				// Update progress counter
+				mu.Lock()
+				processed++
+				mu.Unlock()
 			}
 		}()
 	}
@@ -137,27 +144,28 @@ func (w *Worker) Sync(ctx context.Context) (*Stats, error) {
 
 // syncPost syncs a single post
 func (w *Worker) syncPost(ctx context.Context, slimPost *slab.SlimPost, stats *Stats, mu *sync.Mutex) error {
-	// 1. Fetch markdown content
+	// 1. Check if post has been updated since last sync (optimization to avoid downloading markdown)
+	existingUpdatedAt, err := w.db.GetUpdatedAt(slimPost.ID)
+	if err != nil {
+		return fmt.Errorf("get updated_at: %w", err)
+	}
+
+	// If the post exists and hasn't been updated, skip it entirely
+	if !existingUpdatedAt.IsZero() && existingUpdatedAt.Equal(slimPost.UpdatedAt) {
+		mu.Lock()
+		stats.SkippedPosts++
+		mu.Unlock()
+		return nil // No changes, skip without downloading markdown
+	}
+
+	// 2. Post is new or has been updated - fetch markdown content
 	markdown, err := w.slabClient.GetMarkdown(ctx, slimPost.ID)
 	if err != nil {
 		return fmt.Errorf("get markdown: %w", err)
 	}
 
-	// 2. Compute content hash
+	// 3. Compute content hash
 	contentHash := fmt.Sprintf("%x", md5.Sum([]byte(markdown)))
-
-	// 3. Check if content has changed
-	existingHash, err := w.db.GetContentHash(slimPost.ID)
-	if err != nil {
-		return fmt.Errorf("get content hash: %w", err)
-	}
-
-	if existingHash == contentHash {
-		mu.Lock()
-		stats.SkippedPosts++
-		mu.Unlock()
-		return nil // No changes, skip
-	}
 
 	// 4. Fetch full post metadata (for author info)
 	post, err := w.slabClient.GetPost(ctx, slimPost.ID)
@@ -218,13 +226,14 @@ func (w *Worker) syncPost(ctx context.Context, slimPost *slab.SlimPost, stats *S
 
 	// 9. Update stats
 	mu.Lock()
-	if existingHash == "" {
+	if existingUpdatedAt.IsZero() {
 		stats.NewPosts++
+		log.Printf("✓ New: %s\n", slimPost.Title)
 	} else {
 		stats.UpdatedPosts++
+		log.Printf("✓ Updated: %s\n", slimPost.Title)
 	}
 	mu.Unlock()
 
-	log.Printf("✓ Synced: %s\n", slimPost.Title)
 	return nil
 }

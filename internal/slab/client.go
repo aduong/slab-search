@@ -137,7 +137,6 @@ func (c *Client) GetAllSlimPosts(ctx context.Context) ([]SlimPost, error) {
 					archivedAt
 					topics {
 						id
-						name
 					}
 				}
 			}
