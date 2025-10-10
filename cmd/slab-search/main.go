@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"strings"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/renderinc/slab-search/internal/slab"
 	"github.com/renderinc/slab-search/internal/storage"
 	"github.com/renderinc/slab-search/internal/sync"
+	"github.com/renderinc/slab-search/internal/web"
 )
 
 const (
@@ -51,6 +53,23 @@ func main() {
 
 		query := strings.Join(searchFlags.Args(), " ")
 		runSearch(query, *semantic, *hybrid)
+	case "serve":
+		// Parse serve flags
+		serveFlags := flag.NewFlagSet("serve", flag.ExitOnError)
+		port := serveFlags.String("port", "8080", "Port to listen on")
+		host := serveFlags.String("host", "localhost", "Host to bind to")
+
+		serveFlags.Parse(os.Args[2:])
+
+		runServe(*host, *port)
+	case "embed":
+		// Parse embed flags
+		embedFlags := flag.NewFlagSet("embed", flag.ExitOnError)
+		startFrom := embedFlags.String("start-from", "", "Resume from document ID")
+
+		embedFlags.Parse(os.Args[2:])
+
+		runEmbed(*startFrom)
 	case "reindex":
 		runReindex()
 	case "stats":
@@ -68,12 +87,21 @@ func printUsage() {
 	fmt.Println("Usage:")
 	fmt.Println("  slab-search sync                     Sync posts from Slab + generate embeddings (if Ollama running)")
 	fmt.Println("  slab-search search [flags] <query>   Search for documents")
-	fmt.Println("  slab-search reindex                  Rebuild index + regenerate embeddings (if Ollama running)")
+	fmt.Println("  slab-search serve [flags]            Start web server")
+	fmt.Println("  slab-search embed [flags]            Generate embeddings for all documents (expensive, ~8-12 min)")
+	fmt.Println("  slab-search reindex                  Rebuild Bleve keyword index (~10 seconds)")
 	fmt.Println("  slab-search stats                    Show index statistics")
 	fmt.Println()
 	fmt.Println("Search Flags:")
 	fmt.Println("  -semantic         Use semantic search only (requires embeddings)")
 	fmt.Println("  -hybrid=<weight>  Use hybrid search (0.0-1.0 semantic weight, default keyword-only)")
+	fmt.Println()
+	fmt.Println("Serve Flags:")
+	fmt.Println("  -host=<host>      Host to bind to (default: localhost)")
+	fmt.Println("  -port=<port>      Port to listen on (default: 8080)")
+	fmt.Println()
+	fmt.Println("Embed Flags:")
+	fmt.Println("  -start-from=<id>  Resume from document ID (e.g., after interruption)")
 	fmt.Println()
 	fmt.Println("Examples:")
 	fmt.Println("  slab-search sync")
@@ -82,7 +110,11 @@ func printUsage() {
 	fmt.Println("  slab-search search 'deploy~'                     # Fuzzy search")
 	fmt.Println("  slab-search search -semantic \"database scaling\"  # Semantic search only")
 	fmt.Println("  slab-search search -hybrid=0.3 kubernetes        # Hybrid (70% keyword, 30% semantic)")
-	fmt.Println("  slab-search reindex                              # Rebuild index without re-syncing")
+	fmt.Println("  slab-search serve                                # Start web server on http://localhost:8080")
+	fmt.Println("  slab-search serve -port=3000                     # Start on custom port")
+	fmt.Println("  slab-search embed                                # Generate embeddings for all documents")
+	fmt.Println("  slab-search embed -start-from=abc123             # Resume from specific document ID")
+	fmt.Println("  slab-search reindex                              # Rebuild Bleve index (fast)")
 }
 
 func runSync() {
@@ -259,8 +291,8 @@ func runStats() {
 	fmt.Printf("Documents in index:    %d\n", indexCount)
 }
 
-func runReindex() {
-	fmt.Println("Rebuilding search index and embeddings from database...")
+func runEmbed(startFrom string) {
+	fmt.Println("Generating embeddings for all documents...")
 	fmt.Println()
 
 	// Open database
@@ -270,25 +302,105 @@ func runReindex() {
 	}
 	defer db.Close()
 
-	// Open search index
-	idx, err := search.Open(indexPath)
-	if err != nil {
-		log.Fatalf("Error opening search index: %v", err)
-	}
-	defer idx.Close()
-
-	// Try to initialize embeddings client (optional)
-	var embedder *embeddings.Client
-	embedder = embeddings.NewClient(ollamaURL, ollamaModel)
+	// Initialize embeddings client
+	embedder := embeddings.NewClient(ollamaURL, ollamaModel)
 	if err := embedder.Health(); err != nil {
-		log.Printf("Warning: Ollama not available (%v), skipping embedding generation", err)
-		log.Printf("To generate embeddings, install Ollama and run: ollama pull %s", ollamaModel)
-		embedder = nil
-	} else {
-		log.Printf("✓ Ollama available, will generate embeddings with %s", ollamaModel)
+		log.Fatalf("Error: Ollama not available (%v)", err)
+	}
+	log.Printf("✓ Using Ollama with model: %s", ollamaModel)
+
+	// Get all documents
+	docs, err := db.List(false)
+	if err != nil {
+		log.Fatalf("Error listing documents: %v", err)
 	}
 
-	// Get documents
+	// Filter to resume point if specified
+	startIdx := 0
+	if startFrom != "" {
+		found := false
+		for i, doc := range docs {
+			if doc.ID == startFrom {
+				startIdx = i
+				found = true
+				fmt.Printf("Resuming from document %d/%d (ID: %s)\n", i+1, len(docs), startFrom)
+				break
+			}
+		}
+		if !found {
+			log.Fatalf("Error: Document ID %s not found", startFrom)
+		}
+	}
+
+	fmt.Printf("Processing %d documents (starting from index %d)\n", len(docs)-startIdx, startIdx)
+	fmt.Println()
+	startTime := time.Now()
+
+	embeddingsGenerated := 0
+	embeddingsFailed := 0
+
+	for i := startIdx; i < len(docs); i++ {
+		doc := docs[i]
+
+		// Show progress every 100 documents
+		if (i-startIdx) > 0 && (i-startIdx)%100 == 0 {
+			percent := float64(i-startIdx) / float64(len(docs)-startIdx) * 100
+			elapsed := time.Since(startTime)
+			docsPerSec := float64(i-startIdx) / elapsed.Seconds()
+			remaining := time.Duration(float64(len(docs)-i) / docsPerSec * float64(time.Second))
+
+			fmt.Printf("\rProgress: %d/%d (%.1f%%) - %d generated, %d failed - ETA: %v  ",
+				i-startIdx, len(docs)-startIdx, percent, embeddingsGenerated, embeddingsFailed, remaining.Round(time.Second))
+		}
+
+		// Generate embedding
+		textToEmbed := fmt.Sprintf("%s\n\n%s", doc.Title, doc.Content)
+		embedding, err := embedder.Embed(textToEmbed)
+		if err != nil {
+			log.Printf("\nWarning: Failed to generate embedding for %s (%s): %v", doc.ID, doc.Title, err)
+			embeddingsFailed++
+			continue
+		}
+
+		// Update document with embedding
+		doc.Embedding = embeddings.SerializeEmbedding(embedding)
+		if err := db.Upsert(doc); err != nil {
+			log.Printf("\nWarning: Failed to update embedding for %s: %v", doc.ID, err)
+			embeddingsFailed++
+			continue
+		}
+
+		embeddingsGenerated++
+	}
+
+	duration := time.Since(startTime)
+
+	fmt.Printf("\rProgress: %d/%d (100.0%%) - %d generated, %d failed - Duration: %v\n",
+		len(docs)-startIdx, len(docs)-startIdx, embeddingsGenerated, embeddingsFailed, duration.Round(time.Second))
+	fmt.Println()
+	fmt.Println("=== Embedding Generation Complete ===")
+	fmt.Printf("Embeddings generated: %d\n", embeddingsGenerated)
+	fmt.Printf("Failed:               %d\n", embeddingsFailed)
+	fmt.Printf("Duration:             %v\n", duration.Round(time.Second))
+
+	if embeddingsFailed > 0 {
+		fmt.Println()
+		fmt.Println("Note: Some embeddings failed. Check the log output above for details.")
+	}
+}
+
+func runReindex() {
+	fmt.Println("Rebuilding Bleve keyword search index...")
+	fmt.Println()
+
+	// Open database
+	db, err := storage.Open(dbPath)
+	if err != nil {
+		log.Fatalf("Error opening database: %v", err)
+	}
+	defer db.Close()
+
+	// Get document count
 	docs, err := db.List(false)
 	if err != nil {
 		log.Fatalf("Error listing documents: %v", err)
@@ -297,47 +409,16 @@ func runReindex() {
 	fmt.Printf("Found %d documents in database\n", len(docs))
 	startTime := time.Now()
 
-	// Generate embeddings if Ollama is available
-	if embedder != nil {
-		fmt.Println("Generating embeddings...")
-		embeddingsGenerated := 0
-		embeddingsFailed := 0
-
-		for i, doc := range docs {
-			// Show progress every 100 documents
-			if i > 0 && i%100 == 0 {
-				percent := float64(i) / float64(len(docs)) * 100
-				fmt.Printf("\rEmbeddings: %d/%d (%.1f%%) - %d generated, %d failed  ",
-					i, len(docs), percent, embeddingsGenerated, embeddingsFailed)
-			}
-
-			// Generate embedding
-			textToEmbed := fmt.Sprintf("%s\n\n%s", doc.Title, doc.Content)
-			embedding, err := embedder.Embed(textToEmbed)
-			if err != nil {
-				log.Printf("\nWarning: Failed to generate embedding for %s: %v", doc.ID, err)
-				embeddingsFailed++
-				continue
-			}
-
-			// Update document with embedding
-			doc.Embedding = embeddings.SerializeEmbedding(embedding)
-			if err := db.Upsert(doc); err != nil {
-				log.Printf("\nWarning: Failed to update embedding for %s: %v", doc.ID, err)
-				embeddingsFailed++
-				continue
-			}
-
-			embeddingsGenerated++
-		}
-
-		fmt.Printf("\rEmbeddings: %d/%d (100.0%%) - %d generated, %d failed\n",
-			len(docs), len(docs), embeddingsGenerated, embeddingsFailed)
-		fmt.Println()
+	// Open search index
+	fmt.Println("Opening Bleve index...")
+	idx, err := search.Open(indexPath)
+	if err != nil {
+		log.Fatalf("Error opening search index: %v", err)
 	}
+	defer idx.Close()
 
 	// Rebuild Bleve index
-	fmt.Println("Rebuilding Bleve keyword index...")
+	fmt.Println("Rebuilding index...")
 	progressFn := func(current, total int) {
 		percent := float64(current) / float64(total) * 100
 		fmt.Printf("\rIndexing: %d/%d (%.1f%%)  ", current, total, percent)
@@ -359,7 +440,67 @@ func runReindex() {
 	fmt.Println()
 	fmt.Println("=== Reindex Complete ===")
 	fmt.Printf("Documents indexed: %d\n", indexCount)
-	fmt.Printf("Duration:          %v\n", duration)
+	fmt.Printf("Duration:          %v\n", duration.Round(time.Second))
+	fmt.Println()
+	fmt.Println("Note: This only rebuilds the keyword search index.")
+	fmt.Println("To generate embeddings, use: slab-search embed")
+}
+
+func runServe(host, port string) {
+	log.Println("DEBUG: Starting runServe...")
+
+	// Open database
+	log.Println("DEBUG: Opening database...")
+	db, err := storage.Open(dbPath)
+	if err != nil {
+		log.Fatalf("Error opening database: %v", err)
+	}
+	defer db.Close()
+	log.Println("DEBUG: Database opened")
+
+	// Open search index
+	log.Println("DEBUG: Opening search index...")
+	idx, err := search.Open(indexPath)
+	if err != nil {
+		log.Fatalf("Error opening search index: %v", err)
+	}
+	defer idx.Close()
+	log.Println("DEBUG: Search index opened")
+
+	// Try to initialize embeddings client (optional)
+	log.Println("DEBUG: Checking Ollama...")
+	var embedder *embeddings.Client
+	embedder = embeddings.NewClient(ollamaURL, ollamaModel)
+	if err := embedder.Health(); err != nil {
+		log.Printf("Warning: Ollama not available (%v), semantic/hybrid search disabled", err)
+		log.Printf("To enable semantic search, install Ollama and run: ollama pull %s", ollamaModel)
+		embedder = nil
+	} else {
+		log.Printf("✓ Ollama available, semantic and hybrid search enabled")
+	}
+	log.Println("DEBUG: Ollama check complete")
+
+	// Create server
+	log.Println("DEBUG: Creating web server...")
+	server, err := web.NewServer(db, idx, embedder)
+	if err != nil {
+		log.Fatalf("Error creating server: %v", err)
+	}
+	log.Println("DEBUG: Web server created")
+
+	addr := fmt.Sprintf("%s:%s", host, port)
+
+	fmt.Println()
+	fmt.Println("=== Slab Search Web Server ===")
+	fmt.Printf("Server running at: http://%s\n", addr)
+	fmt.Println()
+	fmt.Println("Press Ctrl+C to stop")
+	fmt.Println()
+
+	log.Println("DEBUG: Starting HTTP listener...")
+	if err := http.ListenAndServe(addr, server.Handler()); err != nil {
+		log.Fatalf("Error starting server: %v", err)
+	}
 }
 
 func getToken() string {

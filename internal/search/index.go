@@ -107,10 +107,21 @@ func (i *Index) Delete(id string) error {
 	return i.index.Delete(id)
 }
 
-// Search performs a search query with fuzzy matching
+// Search performs a search query with title boosting
 func (i *Index) Search(queryStr string, limit int) ([]*SearchResult, error) {
-	// Parse query string (supports quotes, boolean operators, fuzzy ~)
-	query := bleve.NewQueryStringQuery(queryStr)
+	// Boost title matches 3x higher than content matches
+	// This ensures documents with query terms in the title rank higher
+
+	// Title query: MatchQuery with boost
+	titleQuery := bleve.NewMatchQuery(queryStr)
+	titleQuery.SetField("Title")
+	titleQuery.SetBoost(3.0)
+
+	// Content query: QueryStringQuery (supports fuzzy, phrases, boolean ops)
+	contentQuery := bleve.NewQueryStringQuery(queryStr)
+
+	// Combine with OR (disjunction) - matches in either title or content
+	query := bleve.NewDisjunctionQuery(titleQuery, contentQuery)
 
 	// Create search request with highlighting
 	search := bleve.NewSearchRequestOptions(query, limit, 0, false)

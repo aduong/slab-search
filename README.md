@@ -1,6 +1,6 @@
 # Slab Search
 
-Fast, local search for Slab documents with fuzzy matching and markdown indexing.
+Fast search for Slab documents with keyword, semantic, and hybrid search modes. Includes both CLI and web interface.
 
 ## Quick Start
 
@@ -12,27 +12,35 @@ go build -o slab-search ./cmd/slab-search
 export SLAB_TOKEN="your-jwt-token"
 ./slab-search sync
 
-# Search
+# Option 1: Web Interface (recommended)
+./slab-search serve
+# Open http://localhost:8080 in your browser
+
+# Option 2: CLI Search
 ./slab-search search "kubernetes"
 ./slab-search search "postgres config"
 ./slab-search search "deploy~"  # Fuzzy search
 
-# Stats
-./slab-search stats
+# Optional: Generate embeddings for semantic search
+./slab-search embed  # Takes ~8-12 minutes for 10k docs
 ```
 
 ## Features
 
-- ✅ **Full-text search** with Bleve
-- ✅ **Fuzzy matching** for typos (use `~` suffix)
-- ✅ **Phrase search** with quotes
-- ✅ **Markdown indexing** from Slab export API
-- ✅ **Direct API discovery** via `GetAllSlimPosts()` (10,444 posts in ~3s)
-- ✅ **High-performance syncing** (20 concurrent workers)
-- ✅ **Timestamp-based optimization** (skips unchanged posts without downloading)
-- ✅ **Incremental sync** (only downloads changed posts, 30-40x faster re-syncs)
+### Search
+- ✅ **Keyword search** with Bleve (fuzzy matching, phrase search)
+- ✅ **Semantic search** with Ollama embeddings (conceptual matching)
+- ✅ **Hybrid search** combining keyword + semantic (70/30 split)
+- ✅ **Web UI** with real-time search and clickable results
+- ✅ **CLI search** for command-line use
 - ✅ **Result highlighting** with `<mark>` tags
-- ✅ **Progress reporting** during sync
+
+### Data Management
+- ✅ **High-performance syncing** (20 concurrent workers, ~1m45s for 10k posts)
+- ✅ **Incremental sync** (only downloads changed posts, 30-40x faster re-syncs)
+- ✅ **Fast reindexing** (~10 seconds for Bleve index rebuild)
+- ✅ **Resumable embedding generation** (can restart from specific document ID)
+- ✅ **Progress reporting** during sync and embedding generation
 
 ## Installation
 
@@ -85,60 +93,107 @@ export SLAB_TOKEN="your-jwt-token-here"
 - **Incremental sync:** Only downloads changed posts
 - **Progress reporting:** Updates every 5 seconds during sync
 
-### Searching
+### Web Interface (Recommended)
 
 ```bash
-# Basic search
+# Start the web server
+./slab-search serve
+
+# Custom port
+./slab-search serve -port=3000
+
+# Open in browser
+# http://localhost:8080
+```
+
+**Web UI Features:**
+- Real-time search with 300ms debounce
+- Toggle between keyword, hybrid (70/30), and semantic search
+- Clickable results that open Slab posts in new tabs
+- Result previews with highlighted matches
+- Keyboard shortcut: Press `/` to focus search
+- Mobile responsive design
+
+See `WEB_FRONTEND.md` for implementation details.
+
+### CLI Search
+
+```bash
+# Keyword search (default)
 ./slab-search search kubernetes
+./slab-search search "postgres config"  # Phrase search
+./slab-search search "deployement~"     # Fuzzy search
 
-# Phrase search
-./slab-search search "postgres config"
+# Semantic search (requires embeddings)
+./slab-search search -semantic "database scaling"
 
-# Fuzzy search (finds typos)
-./slab-search search "deployement~"
-
-# Multiple terms
-./slab-search search "database redis cache"
+# Hybrid search (70% keyword, 30% semantic)
+./slab-search search -hybrid=0.3 kubernetes
 ```
 
 **Search Features:**
-- English analyzer with stemming (find "deploy" when searching "deployment")
-- Stopword removal (ignores "the", "a", "is", etc.)
-- Result highlighting with context
-- Shows author, URL, and score
+- **Title boosting**: Documents with matches in title rank 3x higher
+- **English analyzer** with stemming (find "deploy" when searching "deployment")
+- **Stopword removal** (ignores "the", "a", "is", etc.)
+- **Result highlighting** with context snippets
+- Shows author, URL, and relevance score
 - Sorted by relevance
 
-**Note:** For search quality improvements and tradeoffs, see `SEARCH_IMPROVEMENTS.md`
+**Note:** For search quality improvements and implementation details, see `SEARCH_IMPROVEMENTS.md`
+
+### Generating Embeddings (Optional)
+
+Embeddings enable semantic and hybrid search modes. This is optional but recommended for better search quality.
+
+```bash
+# Generate embeddings for all documents (requires Ollama)
+./slab-search embed
+
+# Resume from a specific document (if interrupted)
+./slab-search embed -start-from=abc123xyz
+```
+
+**Prerequisites:**
+```bash
+# Install Ollama
+curl -fsSL https://ollama.com/install.sh | sh
+
+# Pull the embedding model
+ollama pull nomic-embed-text
+```
+
+**Performance:**
+- ~8-12 minutes for 10,023 posts
+- Progress updates every 100 documents
+- Shows ETA and failure count
+- Can be interrupted and resumed
+
+**When to run:**
+- After initial sync to enable semantic/hybrid search
+- When you want to use semantic search features
+- After upgrading the embedding model
 
 ### Reindexing
 
 ```bash
-# Rebuild search index AND regenerate embeddings from database (no Slab sync needed)
+# Rebuild Bleve keyword search index (fast, no embeddings)
 ./slab-search reindex
-
-# Shows live progress:
-# Embeddings: 5000/10023 (49.9%) - 4995 generated, 5 failed
-# Indexing: 5000/10023 (49.9%)
 ```
 
+**Performance:**
+- ~10 seconds for 10,023 posts
+- Does NOT regenerate embeddings (use `embed` command for that)
+
 **When to reindex:**
-- After adding the embedding column to an existing database
 - After changing index configuration (analyzers, field mappings)
-- When search results seem stale or incorrect
+- When keyword search results seem stale or incorrect
 - After upgrading Bleve version
 - To fix index corruption
-- To regenerate all embeddings with a new model
 
-**Performance:**
-- Bleve index rebuild: ~9-10 seconds for 10,023 posts
-- Embedding generation: ~8-12 minutes for 10,023 posts (if Ollama available)
-- Total: ~8-12 minutes with embeddings
-
-**What it does:**
-- ✅ Regenerates embeddings for ALL documents (if Ollama running)
-- ✅ Rebuilds Bleve keyword search index
-- ❌ Does NOT re-sync from Slab (uses existing database content)
-- Use `sync` to fetch new/updated posts from Slab
+**Note:** The `reindex` and `embed` commands are now separate. This allows you to:
+- Run `serve` while `embed` is generating embeddings (Bleve index not locked)
+- Rebuild the keyword index quickly without regenerating embeddings
+- Resume embedding generation if interrupted
 
 ### Statistics
 
@@ -160,25 +215,36 @@ Shows document counts in database and search index.
                ▼
 ┌─────────────────────────────────────┐
 │         Sync Worker                 │
-│  1. Get topics                      │
-│  2. Get posts per topic             │
-│  3. Fetch markdown (concurrent)     │
-│  4. Hash & detect changes           │
-│  5. Store & index                   │
-└───────┬─────────────────┬───────────┘
-        │                 │
-        ▼                 ▼
-┌──────────────┐  ┌──────────────────┐
-│   SQLite     │  │  Bleve Index     │
-│  (metadata)  │  │  (full-text)     │
-└──────────────┘  └──────────────────┘
-        ▲                 ▲
-        │                 │
-        └────────┬────────┘
-                 │
-        ┌────────▼────────┐
-        │  Search CLI     │
-        └─────────────────┘
+│  1. Fetch all post metadata         │
+│  2. Download markdown (concurrent)  │
+│  3. Generate embeddings (Ollama)    │
+│  4. Store & index                   │
+└───────┬──────────────────┬──────────┘
+        │                  │
+        ▼                  ▼
+┌──────────────┐  ┌─────────────────┐
+│   SQLite     │  │  Bleve Index    │
+│  • Metadata  │  │  • Keyword      │
+│  • Content   │  │  • Fuzzy match  │
+│  • Embeddings│  │  • Highlighting │
+└──────┬───────┘  └────────┬────────┘
+       │                   │
+       └──────────┬────────┘
+                  │
+       ┌──────────▼──────────┐
+       │   Search Layer      │
+       │  • Keyword          │
+       │  • Semantic         │
+       │  • Hybrid (70/30)   │
+       └──────────┬──────────┘
+                  │
+         ┌────────┴────────┐
+         │                 │
+         ▼                 ▼
+    ┌─────────┐      ┌──────────┐
+    │ Web UI  │      │ CLI      │
+    │ (HTMX)  │      │ Search   │
+    └─────────┘      └──────────┘
 ```
 
 ## Project Structure
@@ -195,13 +261,23 @@ slab-search/
 │   │   ├── db.go            # SQLite operations
 │   │   └── document.go      # Document model
 │   ├── search/
-│   │   └── index.go         # Bleve search index
-│   └── sync/
-│       └── worker.go        # Concurrent sync worker
+│   │   ├── index.go         # Bleve keyword search
+│   │   └── semantic.go      # Semantic search (embeddings)
+│   ├── embeddings/
+│   │   └── ollama.go        # Ollama embedding client
+│   ├── sync/
+│   │   └── worker.go        # Concurrent sync worker
+│   └── web/
+│       ├── server.go        # HTTP server & handlers
+│       ├── templates/
+│       │   └── index.html   # Search UI template
+│       └── static/
+│           └── style.css    # Styling
 ├── data/                    # Created at runtime
 │   ├── slab.db             # SQLite database
 │   └── bleve/              # Search index
 ├── design.md               # Design document
+├── WEB_FRONTEND.md         # Web UI implementation guide
 ├── API_FINDINGS.md         # API exploration notes
 └── README.md               # This file
 ```
@@ -280,14 +356,18 @@ Authorization: Bearer {jwt_token}
 
 ### Adding Features
 
-**Phase 2 Ideas:**
-- [ ] Semantic search with embeddings
-- [ ] Author/date filtering
-- [ ] Web UI with HTMX
-- [ ] Automated daily sync (cron/systemd timer)
-
 **Completed:**
 - [x] Incremental sync (timestamp-based optimization, 30-40x faster re-syncs)
+- [x] Semantic search with embeddings (Ollama + nomic-embed-text)
+- [x] Hybrid search (keyword + semantic, 70/30 split)
+- [x] Web UI with HTMX (real-time search, clickable results)
+- [x] Separate embed command (resumable, doesn't lock Bleve index)
+
+**Phase 3 Ideas:**
+- [ ] Author/date filtering in web UI
+- [ ] Automated daily sync (cron/systemd timer)
+- [ ] Search analytics and popular queries
+- [ ] Saved searches
 
 **Considered but dropped:**
 - ~~Advanced incremental sync APIs~~ - Simple `updatedAt` timestamp comparison is sufficient and very fast
@@ -338,9 +418,12 @@ Connection queries require pagination. All implemented queries include `first: 1
 **Measured (10,023 posts - production dataset):**
 - **Initial sync:** 1m45s (~96 posts/second)
 - **Re-sync (no changes):** 2.8s (38x faster with timestamp optimization)
-- **Search:** <50ms for most queries
+- **Embedding generation:** 8-12 minutes (~14 docs/second)
+- **Reindex (Bleve only):** ~10 seconds
+- **Keyword search:** <50ms for most queries
+- **Semantic search:** ~40ms for 10k documents (brute-force cosine similarity)
 - **Index size:** ~200MB
-- **Database size:** ~100MB
+- **Database size:** ~100MB (~130MB with embeddings)
 
 **Sync Breakdown:**
 - API metadata fetch: ~3s (all 10,444 posts)

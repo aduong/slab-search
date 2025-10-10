@@ -3,23 +3,45 @@
 ## ✅ IMPLEMENTATION STATUS
 
 **Phase 1 MVP: COMPLETE + OPTIMIZED** (2025-10-08/09)
-**Phase 2 Semantic Search: IN PROGRESS** (2025-10-09)
+**Phase 2 Semantic Search + Web UI: COMPLETE** (2025-10-09)
 
-**What Works (Phase 1):**
+**What Works:**
+
+### Core Functionality (Phase 1)
 - ✅ Direct post discovery via `GetAllSlimPosts()` (10,444 posts in ~3s)
 - ✅ High-performance concurrent markdown fetching (20 workers)
 - ✅ Timestamp-based optimization (38x faster re-syncs)
-- ✅ SQLite storage with change detection
+- ✅ SQLite storage with change detection and embeddings
 - ✅ Bleve full-text search with fuzzy matching
-- ✅ CLI commands: sync, search, reindex, stats
-- ✅ Reindex without re-syncing from Slab (~8s for 10k posts)
 - ✅ Progress reporting during sync (every 5 seconds)
 - ✅ Full dataset: 10,023 posts synced in 1m45s (initial) / 2.8s (re-sync)
 
-**In Progress (Phase 2):**
-- 🔄 Semantic search with Ollama embeddings
-- 🔄 Hybrid scoring (keyword + semantic)
-- See `EMBEDDINGS_IMPLEMENTATION.md` for implementation plan
+### Search Modes (Phase 2)
+- ✅ **Keyword search** with Bleve (fuzzy, phrase, boolean, **3x title boost**)
+- ✅ **Semantic search** with Ollama embeddings (nomic-embed-text, 768-dim)
+- ✅ **Hybrid search** (70% keyword, 30% semantic) with score merging
+
+### Web Interface (Phase 2)
+- ✅ **Web UI** with HTMX (server-side rendering, real-time search)
+- ✅ **Search modes toggle** (keyword/hybrid/semantic)
+- ✅ **Clickable results** that open Slab in new tabs
+- ✅ **Result highlighting** with `<mark>` tags from Bleve
+- ✅ **Keyboard shortcuts** (`/` to focus search)
+- ✅ **Mobile responsive** design
+
+### CLI Commands
+- ✅ `sync` - Sync posts from Slab with optional embeddings
+- ✅ `search` - CLI search with keyword/semantic/hybrid modes
+- ✅ `serve` - Start web server (http://localhost:8080)
+- ✅ **`embed`** - Generate embeddings separately (resumable with `-start-from`)
+- ✅ **`reindex`** - Fast Bleve rebuild (~10s, no embeddings)
+- ✅ `stats` - Show index statistics
+
+**Key Architecture Decisions:**
+- **Separated `embed` from `reindex`**: Embedding generation (8-12 min) no longer locks Bleve index (~10s rebuild)
+- **Resumable embeddings**: Can interrupt and resume with `-start-from` flag
+- **Server-side HTML rendering**: HTMX + Go templates (no SPA complexity)
+- **Embedded assets**: Single binary deployment with `embed.FS`
 
 **Key Learnings:**
 - `currentSession.organization.posts` is much faster than topic iteration
@@ -28,8 +50,17 @@
 - Markdown export endpoint works perfectly
 - Simple timestamp-based incremental sync is sufficient (no need for complex delta APIs)
 - Timestamp checking achieves 30-40x faster re-syncs
+- Separating expensive operations (embeddings) from fast ones (reindex) prevents blocking
+- HTMX works great for simple UIs (no build pipeline, minimal JavaScript)
+- Brute-force cosine similarity is fast enough for 10k docs (~40ms)
 
-See `README.md` for usage and `API_FINDINGS.md` for implementation details.
+**Documentation:**
+- See `README.md` for usage
+- See `WEB_FRONTEND.md` for web UI implementation details
+- See `EMBEDDINGS_IMPLEMENTATION.md` for semantic search design
+- See `TITLE_BOOSTING.md` for title boosting implementation
+- See `SEARCH_IMPROVEMENTS.md` for search quality details
+- See `API_FINDINGS.md` for Slab API details
 
 ---
 
@@ -424,42 +455,48 @@ services:
 
 ## 4. Implementation Phases
 
-### Phase 1: MVP (Week 1-2)
-- [ ] Slab API client (GraphQL + HTTP markdown export)
-- [ ] Topic iteration for post discovery
-- [ ] SQLite storage with documents table
-- [ ] Bleve index with fuzzy matching
-- [ ] Markdown content indexing
-- [ ] Manual sync command: `slab-search sync`
-- [ ] CLI search: `slab-search search "query"`
-- [ ] Simple web UI with search (Go templates + HTMX)
-- [ ] Content hash-based change detection
-- [ ] Basic logging and error handling
+### Phase 1: MVP ✅ COMPLETE
+- [x] Slab API client (GraphQL + HTTP markdown export)
+- [x] Direct post discovery via `currentSession.organization.posts`
+- [x] SQLite storage with documents table
+- [x] Bleve index with fuzzy matching
+- [x] Markdown content indexing
+- [x] Manual sync command: `slab-search sync`
+- [x] CLI search: `slab-search search "query"`
+- [x] Timestamp-based incremental sync (30-40x faster re-syncs)
+- [x] Progress reporting during sync
+- [x] Basic logging and error handling
 
-### Phase 2: Enhancement (Week 3-4)
-- [ ] Semantic search with Ollama embeddings (nomic-embed-text, 768-dim)
-  - Setup Ollama service (systemd)
-  - Add `embedding BLOB` column to documents table
-  - Generate embeddings during sync (~8min for 10k docs)
-  - Implement cosine similarity search (brute-force, ~40ms)
-- [ ] Hybrid scoring (keyword 70% + semantic 30%)
-- [ ] Author and date filtering
-- [ ] Improved UI with HTMX interactivity
-- [ ] Automated daily sync (cron/scheduler)
-- [ ] Search result highlighting improvements
-- [ ] Performance optimizations
-- [ ] Incremental sync (only changed docs) ✅ DONE (timestamp-based)
-- [ ] Monitoring dashboard
+### Phase 2: Enhancement ✅ COMPLETE
+- [x] Semantic search with Ollama embeddings (nomic-embed-text, 768-dim)
+  - [x] Ollama integration (local embeddings)
+  - [x] Add `embedding BLOB` column to documents table
+  - [x] Generate embeddings during sync (~8min for 10k docs)
+  - [x] Implement cosine similarity search (brute-force, ~40ms)
+- [x] Hybrid scoring (keyword 70% + semantic 30%)
+- [x] Separate `embed` command (resumable, doesn't lock Bleve)
+- [x] Fast `reindex` command (~10s, Bleve only)
+- [x] Web UI with HTMX (Go templates + HTMX)
+  - [x] Real-time search with 300ms debounce
+  - [x] Search mode toggle (keyword/hybrid/semantic)
+  - [x] Clickable results linking to Slab
+  - [x] Result highlighting with `<mark>` tags
+  - [x] Keyboard shortcuts (`/` to focus)
+  - [x] Mobile responsive design
+- [x] CLI search modes (keyword/semantic/hybrid)
+- [x] Search result highlighting improvements
+- [x] Performance optimizations
 
-**See `EMBEDDINGS_IMPLEMENTATION.md` for detailed semantic search design and implementation plan.**
+**See `WEB_FRONTEND.md` for web UI implementation and `EMBEDDINGS_IMPLEMENTATION.md` for semantic search design.**
 
-### Phase 3: Production (Week 5-6)
-- [ ] Incremental sync using changes API
-- [ ] Deployment to Render
-- [ ] Authentication (if needed)
+### Phase 3: Future Enhancements
+- [ ] Author and date filtering in web UI
+- [ ] Automated daily sync (cron/systemd timer)
+- [ ] Deployment to Render (web service + scheduled job)
+- [ ] Authentication (if hosting publicly)
 - [ ] Search analytics dashboard
-- [ ] Admin interface
-- [ ] Load testing
+- [ ] Saved searches with shareable URLs
+- [ ] Load testing for hosted deployment
 
 ## 5. Testing Strategy
 

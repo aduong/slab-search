@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Slab Search</title>
+    <script src="https://unpkg.com/htmx.org@1.9.10"></script>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🔍 Slab Search</h1>
+            <p class="subtitle">Fast search for Slab documents with fuzzy matching</p>
+        </header>
+
+        <div class="search-box">
+            <input
+                type="text"
+                id="searchInput"
+                name="q"
+                placeholder="Search for documents..."
+                autocomplete="off"
+                autofocus
+                hx-get="/api/search"
+                hx-trigger="keyup changed delay:300ms, search"
+                hx-target="#results"
+                hx-include="[name='mode']"
+                hx-indicator="#loading"
+            >
+
+            <div class="search-options">
+                <label class="search-mode">
+                    <input type="radio" name="mode" value="keyword" checked hx-trigger="change" hx-get="/api/search" hx-include="#searchInput" hx-target="#results">
+                    <span>Keyword</span>
+                </label>
+                {{if .HasEmbeddings}}
+                <label class="search-mode">
+                    <input type="radio" name="mode" value="hybrid" hx-trigger="change" hx-get="/api/search" hx-include="#searchInput" hx-target="#results">
+                    <span>Hybrid (70/30)</span>
+                </label>
+                <label class="search-mode">
+                    <input type="radio" name="mode" value="semantic" hx-trigger="change" hx-get="/api/search" hx-include="#searchInput" hx-target="#results">
+                    <span>Semantic</span>
+                </label>
+                {{end}}
+            </div>
+
+            <div id="loading" class="htmx-indicator">
+                <span class="spinner"></span> Searching...
+            </div>
+        </div>
+
+        <div id="results" class="results">
+            <div class="empty-state">
+                <p>👆 Start typing to search through your Slab documents</p>
+                <div class="tips">
+                    <h3>Search Tips:</h3>
+                    <ul>
+                        <li><strong>"exact phrase"</strong> - Search for exact phrases</li>
+                        <li><strong>deploy~</strong> - Fuzzy matching (finds typos)</li>
+                        <li><strong>kubernetes docker</strong> - Multiple terms (AND search)</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Focus search on '/' key
+        document.addEventListener('keydown', function(e) {
+            if (e.key === '/' && document.activeElement.tagName !== 'INPUT') {
+                e.preventDefault();
+                document.getElementById('searchInput').focus();
+            }
+        });
+    </script>
+</body>
+</html>

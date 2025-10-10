@@ -65,57 +65,132 @@ authorFieldMapping := bleve.NewTextFieldMapping()
 - **Search time**: No degradation
 - **Index size**: Slightly smaller (stopwords removed)
 
-## Not Implemented: Title Boosting
+## Implemented: Title Boosting (2025-10-10)
 
-### What We Tried
+### Implementation Approach
 
-**Goal**: Make title matches rank 3x higher than content matches
+**Goal**: Make title matches rank 3x higher than content matches while preserving QueryStringQuery features
 
-**Attempted approach:**
+**Solution**: Hybrid query combining MatchQuery (title, with boost) and QueryStringQuery (content, with all features)
+
 ```go
-titleQuery := bleve.NewQueryStringQuery(queryStr)
-titleQuery.SetField("Title")
-titleQuery.SetBoost(3.0)
-```
-
-**Problem**: `QueryStringQuery` doesn't support `SetField()` or field-specific boosting
-
-**Alternative attempted:**
-```go
+// Title query: MatchQuery with boost
 titleQuery := bleve.NewMatchQuery(queryStr)
 titleQuery.SetField("Title")
 titleQuery.SetBoost(3.0)
 
-contentQuery := bleve.NewMatchQuery(queryStr)
-contentQuery.SetField("Content")
+// Content query: QueryStringQuery (supports fuzzy, phrases, boolean ops)
+contentQuery := bleve.NewQueryStringQuery(queryStr)
 
+// Combine with OR (disjunction)
 query := bleve.NewDisjunctionQuery(titleQuery, contentQuery)
 ```
 
-### The Tradeoff Discovered
+### Why This Works
 
-**QueryStringQuery Features (what we lose with MatchQuery):**
-- ✅ **Fuzzy search**: `deploy~` finds "deployment"
-- ✅ **Phrase search**: `"postgres config"` finds exact phrase
-- ✅ **Boolean operators**: `kubernetes AND postgres`
-- ✅ **Field-specific search**: `Author:john`
-- ✅ **Wildcards**: `deploy*` finds "deployment"
-- ✅ **Exclusions**: `kubernetes -docker`
+**Key Discovery**: We don't need to wrap the QueryStringQuery in `Content:(...)` because:
+1. QueryStringQuery searches all fields by default
+2. The DisjunctionQuery (OR) combines scores from both queries
+3. Title matches get 3x boost from the MatchQuery component
+4. Content matches use normal scoring from QueryStringQuery component
+5. Documents can match on title, content, or both
 
-**Field-Specific Boosting (what we gain with MatchQuery):**
-- ✅ Title matches rank higher
-- ✅ Author matches can have custom weight
-- ✅ More control over scoring
+### Features Preserved
 
-**Decision**: We chose to preserve QueryStringQuery functionality because:
-1. User-facing features (fuzzy, phrase) are more valuable than invisible boosting
-2. Users expect `~` and `""` to work
-3. Title matches already rank relatively high due to length (shorter text = higher score)
-4. Analyzer improvements provide significant quality gains
+✅ **All QueryStringQuery features work:**
+- **Fuzzy search**: `architecture~` finds "architectural"
+- **Phrase search**: `"render architecture"` finds exact phrase
+- **Boolean operators**: `kubernetes AND postgres`, `redis OR memcached`
+- **Exclusions**: `kubernetes -docker`
+- **Wildcards**: `deploy*` finds "deployment"
+- **Field-specific**: `author:john` (though author isn't in our default search)
 
-## Future Approaches to Implement Title Boosting
+✅ **Title boosting works:**
+- Documents with query terms in title rank 3x higher
+- "Render Architecture" now ranks #1 for `"render architecture"` query
+- "Solutioning & Architecture" ranks #1 for `"architecture"` query
 
-If we want to add title boosting without losing QueryStringQuery features:
+### Testing Results
+
+**Before title boosting:**
+```bash
+./slab-search search "render architecture"
+# Result #1: [draft] Customer Architecture Review/Deep Dive (0.638)
+# "Render Architecture" not in top 5
+```
+
+**After title boosting:**
+```bash
+./slab-search search "render architecture"
+# Result #1: Render Architecture (5.311) ✅
+# Result #2: Render Architecture (Copy) (4.341)
+# Result #3: Render Architecture Diagram (4.326)
+```
+
+**Score comparison:**
+- Without boost: Content-heavy documents scored ~0.6-0.7
+- With boost: Title matches now score 5.3+ (7-8x improvement)
+
+### Alternative Approaches Considered
+
+We evaluated several approaches before settling on the hybrid solution:
+
+**Approach 1: SetBoost() on QueryStringQuery**
+```go
+q := bleve.NewQueryStringQuery(queryStr)
+q.SetBoost(3.0)
+```
+- ❌ **Doesn't work**: SetBoost() is ignored on QueryStringQuery
+
+**Approach 2: Field boost syntax**
+```go
+boostedQuery := "Title:render^3 Title:architecture^3 Content:render Content:architecture"
+```
+- ⚠️ **Works but requires parsing**: Need to tokenize and rebuild query
+- ❌ **Breaks with fuzzy**: `Title:architecture~^3` causes parse errors
+- ❌ **Complex edge cases**: Boolean operators, phrases, wildcards all need special handling
+
+**Approach 3: Wrapped field syntax**
+```go
+boostedQuery := fmt.Sprintf("Title:(%s)^3 Content:(%s)", userQuery, userQuery)
+```
+- ⚠️ **Works but mediocre results**: Scores ~1.1 vs 5.3 with per-term boost
+- ❌ **Still breaks with fuzzy**: `Content:(architecture~)` causes parse errors
+
+**Approach 4: Post-process scoring**
+```go
+// Run search, then multiply scores if title matched
+for _, hit := range results.Hits {
+    if titleMatched(hit) {
+        hit.Score *= 3.0
+    }
+}
+```
+- ✅ **Preserves all features**
+- ❌ **Hacky**: Manual score manipulation
+- ❌ **Inefficient**: Need to fetch 2x results, then re-sort
+
+**Approach 5: Hybrid MatchQuery + QueryStringQuery (CHOSEN)**
+```go
+titleQuery := bleve.NewMatchQuery(queryStr)
+titleQuery.SetBoost(3.0)
+contentQuery := bleve.NewQueryStringQuery(queryStr)
+combined := bleve.NewDisjunctionQuery(titleQuery, contentQuery)
+```
+- ✅ **Clean implementation**: No string manipulation
+- ✅ **All QueryStringQuery features work**: Fuzzy, phrases, boolean ops
+- ✅ **Excellent results**: Same scores as per-term boost approach
+- ✅ **Simple**: Just 4 lines of code
+
+### Performance Impact
+
+- **Search time**: No measurable degradation
+- **Implementation**: Simple, maintainable code
+- **Features**: All preserved
+
+## Future Improvements
+
+Now that title boosting is implemented, here are other potential improvements:
 
 ### Option 1: Query Syntax with Field Boost
 
@@ -268,22 +343,23 @@ func isSimpleQuery(q string) bool {
 - User confusion about why results differ
 - Still doesn't handle all cases
 
-## Recommendation
+## Current Search Quality
 
-**Current state (with analyzers only)** is a good balance:
-- Search quality improved significantly with stemming
-- All QueryStringQuery features preserved
-- Simple, maintainable code
+**Implemented improvements:**
+1. ✅ **English analyzer** with stemming and stopword removal
+2. ✅ **Title boosting** (3x) using hybrid query approach
 
-**If title boosting is needed**, I recommend:
-1. **Short term**: Option 5 (Hybrid) - boost simple queries only
-2. **Long term**: Option 2 (Post-process scoring) - most flexible
+**Search quality is now excellent:**
+- Title matches rank appropriately high
+- All QueryStringQuery features preserved (fuzzy, phrases, boolean)
+- Stemming finds word variations automatically
+- Clean, maintainable implementation
 
-**However**, before implementing boosting:
-- Measure actual search quality with current implementation
-- Get user feedback on search results
-- Determine if boosting is actually needed or if analyzers are sufficient
-- Title matches may already rank high due to document length effects
+**Next steps to consider:**
+- Monitor user feedback on search relevance
+- Track which queries don't return good results
+- Consider author/date filtering in UI
+- Possibly add automatic fuzzy matching for single-term queries
 
 ## Metrics to Track
 
