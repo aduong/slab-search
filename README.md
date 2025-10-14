@@ -14,7 +14,7 @@ export SLAB_TOKEN="your-jwt-token"
 
 # Option 1: Web Interface (recommended)
 ./slab-search serve
-# Open http://localhost:8080 in your browser
+# Open http://localhost:6893 in your browser
 
 # Option 2: CLI Search
 ./slab-search search "kubernetes"
@@ -103,7 +103,7 @@ export SLAB_TOKEN="your-jwt-token-here"
 ./slab-search serve -port=3000
 
 # Open in browser
-# http://localhost:8080
+# http://localhost:6893
 ```
 
 **Web UI Features:**

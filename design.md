@@ -32,7 +32,7 @@
 ### CLI Commands
 - ✅ `sync` - Sync posts from Slab with optional embeddings
 - ✅ `search` - CLI search with keyword/semantic/hybrid modes
-- ✅ `serve` - Start web server (http://localhost:8080)
+- ✅ `serve` - Start web server (http://localhost:6893)
 - ✅ **`embed`** - Generate embeddings separately (resumable with `-start-from`)
 - ✅ **`reindex`** - Fast Bleve rebuild (~10s, no embeddings)
 - ✅ `stats` - Show index statistics
@@ -401,7 +401,7 @@ sync:
   include_archived: false      # Skip archived posts
 
 server:
-  port: 8080
+  port: 6893
   host: "localhost"
 
 search:

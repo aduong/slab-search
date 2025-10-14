@@ -214,7 +214,7 @@ Alternative boost factors considered:
 
 # Test web UI
 ./slab-search serve
-# Visit http://localhost:8080
+# Visit http://localhost:6893
 # Search for "render architecture"
 
 # Test advanced features

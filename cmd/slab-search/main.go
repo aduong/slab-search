@@ -56,7 +56,7 @@ func main() {
 	case "serve":
 		// Parse serve flags
 		serveFlags := flag.NewFlagSet("serve", flag.ExitOnError)
-		port := serveFlags.String("port", "8080", "Port to listen on")
+		port := serveFlags.String("port", "6893", "Port to listen on")
 		host := serveFlags.String("host", "localhost", "Host to bind to")
 
 		serveFlags.Parse(os.Args[2:])
@@ -98,7 +98,7 @@ func printUsage() {
 	fmt.Println()
 	fmt.Println("Serve Flags:")
 	fmt.Println("  -host=<host>      Host to bind to (default: localhost)")
-	fmt.Println("  -port=<port>      Port to listen on (default: 8080)")
+	fmt.Println("  -port=<port>      Port to listen on (default: 6893)")
 	fmt.Println()
 	fmt.Println("Embed Flags:")
 	fmt.Println("  -start-from=<id>  Resume from document ID (e.g., after interruption)")
@@ -110,7 +110,7 @@ func printUsage() {
 	fmt.Println("  slab-search search 'deploy~'                     # Fuzzy search")
 	fmt.Println("  slab-search search -semantic \"database scaling\"  # Semantic search only")
 	fmt.Println("  slab-search search -hybrid=0.3 kubernetes        # Hybrid (70% keyword, 30% semantic)")
-	fmt.Println("  slab-search serve                                # Start web server on http://localhost:8080")
+	fmt.Println("  slab-search serve                                # Start web server on http://localhost:6893")
 	fmt.Println("  slab-search serve -port=3000                     # Start on custom port")
 	fmt.Println("  slab-search embed                                # Generate embeddings for all documents")
 	fmt.Println("  slab-search embed -start-from=abc123             # Resume from specific document ID")

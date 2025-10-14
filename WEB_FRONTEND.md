@@ -183,14 +183,14 @@ document.addEventListener('keydown', function(e) {
 ### Starting the Server
 
 ```bash
-# Default (localhost:8080)
+# Default (localhost:6893)
 ./slab-search serve
 
 # Custom port
 ./slab-search serve -port=3000
 
 # Custom host (e.g., for Docker)
-./slab-search serve -host=0.0.0.0 -port=8080
+./slab-search serve -host=0.0.0.0 -port=6893
 ```
 
 ### Search Modes
@@ -215,16 +215,16 @@ document.addEventListener('keydown', function(e) {
 
 ```bash
 # Keyword search
-http://localhost:8080/api/search?q=kubernetes&mode=keyword
+http://localhost:6893/api/search?q=kubernetes&mode=keyword
 
 # Hybrid search
-http://localhost:8080/api/search?q=database+scaling&mode=hybrid
+http://localhost:6893/api/search?q=database+scaling&mode=hybrid
 
 # Semantic search
-http://localhost:8080/api/search?q=how+to+debug+memory+leaks&mode=semantic
+http://localhost:6893/api/search?q=how+to+debug+memory+leaks&mode=semantic
 
 # Custom limit
-http://localhost:8080/api/search?q=redis&limit=50
+http://localhost:6893/api/search?q=redis&limit=50
 ```
 
 ## Implementation Notes
@@ -341,7 +341,7 @@ go build -o slab-search ./cmd/slab-search
 ./slab-search serve
 
 # Test
-curl http://localhost:8080/health
+curl http://localhost:6893/health
 ```
 
 ### Production Deployment
@@ -358,7 +358,7 @@ After=network.target
 Type=simple
 User=slab-search
 WorkingDirectory=/opt/slab-search
-ExecStart=/opt/slab-search/slab-search serve -host=0.0.0.0 -port=8080
+ExecStart=/opt/slab-search/slab-search serve -host=0.0.0.0 -port=6893
 Restart=on-failure
 
 [Install]
@@ -379,7 +379,7 @@ server {
     server_name slab-search.render.com;
 
     location / {
-        proxy_pass http://localhost:8080;
+        proxy_pass http://localhost:6893;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
     }
@@ -399,14 +399,14 @@ RUN apk --no-cache add ca-certificates
 WORKDIR /root/
 COPY --from=builder /app/slab-search .
 COPY --from=builder /app/data ./data
-EXPOSE 8080
+EXPOSE 6893
 CMD ["./slab-search", "serve", "-host=0.0.0.0"]
 ```
 
 **Run:**
 ```bash
 docker build -t slab-search .
-docker run -p 8080:8080 -v $(pwd)/data:/root/data slab-search
+docker run -p 6893:8080 -v $(pwd)/data:/root/data slab-search
 ```
 
 ## Troubleshooting
@@ -415,8 +415,8 @@ docker run -p 8080:8080 -v $(pwd)/data:/root/data slab-search
 
 **Error: "Address already in use"**
 ```bash
-# Find process using port 8080
-lsof -i :8080
+# Find process using port 6893
+lsof -i :6893
 
 # Kill it or use different port
 ./slab-search serve -port=3000
@@ -436,7 +436,7 @@ lsof -i :8080
 
 2. Test with simple query:
    ```bash
-   curl 'http://localhost:8080/api/search?q=the'
+   curl 'http://localhost:6893/api/search?q=the'
    ```
 
 3. For semantic search, verify embeddings:
