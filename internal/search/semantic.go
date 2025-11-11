@@ -10,7 +10,8 @@ import (
 
 // SemanticSearch performs semantic similarity search using embeddings
 // Returns results sorted by cosine similarity (highest first)
-func (i *Index) SemanticSearch(queryEmbedding []float32, limit int) ([]*SearchResult, error) {
+// useQwen: if true, uses EmbeddingQwen field; otherwise uses Embedding field
+func (i *Index) SemanticSearch(queryEmbedding []float32, limit int, useQwen bool) ([]*SearchResult, error) {
 	// 1. Get all documents from database (with embeddings)
 	docs, err := i.db.List(false) // Don't include archived
 	if err != nil {
@@ -25,12 +26,20 @@ func (i *Index) SemanticSearch(queryEmbedding []float32, limit int) ([]*SearchRe
 
 	scores := make([]scoredDoc, 0, len(docs))
 	for _, doc := range docs {
+		// Select which embedding field to use
+		var embeddingData []byte
+		if useQwen {
+			embeddingData = doc.EmbeddingQwen
+		} else {
+			embeddingData = doc.Embedding
+		}
+
 		// Skip documents without embeddings
-		if len(doc.Embedding) == 0 {
+		if len(embeddingData) == 0 {
 			continue
 		}
 
-		docEmbedding := embeddings.DeserializeEmbedding(doc.Embedding)
+		docEmbedding := embeddings.DeserializeEmbedding(embeddingData)
 		if docEmbedding == nil {
 			continue
 		}
@@ -62,7 +71,8 @@ func (i *Index) SemanticSearch(queryEmbedding []float32, limit int) ([]*SearchRe
 
 // HybridSearch combines keyword search (Bleve) with semantic search (embeddings)
 // keywordWeight: 0.0-1.0, weight for keyword results (e.g., 0.7 = 70% keyword, 30% semantic)
-func (i *Index) HybridSearch(query string, queryEmbedding []float32, limit int, keywordWeight float64) ([]*SearchResult, error) {
+// useQwen: if true, uses EmbeddingQwen field; otherwise uses Embedding field
+func (i *Index) HybridSearch(query string, queryEmbedding []float32, limit int, keywordWeight float64, useQwen bool) ([]*SearchResult, error) {
 	// Validate weight
 	if keywordWeight < 0 || keywordWeight > 1 {
 		return nil, fmt.Errorf("keywordWeight must be between 0 and 1")
@@ -77,7 +87,7 @@ func (i *Index) HybridSearch(query string, queryEmbedding []float32, limit int, 
 		return nil, fmt.Errorf("keyword search: %w", err)
 	}
 
-	semanticResults, err := i.SemanticSearch(queryEmbedding, candidateLimit)
+	semanticResults, err := i.SemanticSearch(queryEmbedding, candidateLimit, useQwen)
 	if err != nil {
 		return nil, fmt.Errorf("semantic search: %w", err)
 	}

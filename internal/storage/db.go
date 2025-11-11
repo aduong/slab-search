@@ -99,6 +99,26 @@ func (d *DB) runMigrations() error {
 		}
 	}
 
+	// Migration 2: Add embedding_qwen column (for model comparison)
+	var qwenColumnExists bool
+	err = d.db.QueryRow(`
+		SELECT COUNT(*) > 0
+		FROM pragma_table_info('documents')
+		WHERE name='embedding_qwen'
+	`).Scan(&qwenColumnExists)
+
+	if err != nil {
+		return fmt.Errorf("check embedding_qwen column: %w", err)
+	}
+
+	if !qwenColumnExists {
+		// Add embedding_qwen column
+		_, err = d.db.Exec("ALTER TABLE documents ADD COLUMN embedding_qwen BLOB")
+		if err != nil {
+			return fmt.Errorf("add embedding_qwen column: %w", err)
+		}
+	}
+
 	return nil
 }
 
@@ -107,8 +127,8 @@ func (d *DB) Upsert(doc *Document) error {
 	query := `
 	INSERT INTO documents (
 		id, title, content, author_name, author_email,
-		slab_url, topics, published_at, updated_at, archived_at, synced_at, embedding
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		slab_url, topics, published_at, updated_at, archived_at, synced_at, embedding, embedding_qwen
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(id) DO UPDATE SET
 		title = excluded.title,
 		content = excluded.content,
@@ -120,12 +140,13 @@ func (d *DB) Upsert(doc *Document) error {
 		updated_at = excluded.updated_at,
 		archived_at = excluded.archived_at,
 		synced_at = excluded.synced_at,
-		embedding = excluded.embedding
+		embedding = excluded.embedding,
+		embedding_qwen = excluded.embedding_qwen
 	`
 
 	_, err := d.db.Exec(query,
 		doc.ID, doc.Title, doc.Content, doc.AuthorName, doc.AuthorEmail,
-		doc.SlabURL, doc.Topics, doc.PublishedAt, doc.UpdatedAt, doc.ArchivedAt, doc.SyncedAt, doc.Embedding,
+		doc.SlabURL, doc.Topics, doc.PublishedAt, doc.UpdatedAt, doc.ArchivedAt, doc.SyncedAt, doc.Embedding, doc.EmbeddingQwen,
 	)
 	return err
 }
@@ -135,14 +156,14 @@ func (d *DB) Get(id string) (*Document, error) {
 	doc := &Document{}
 	query := `
 	SELECT id, title, content, author_name, author_email,
-	       slab_url, topics, published_at, updated_at, archived_at, synced_at, embedding
+	       slab_url, topics, published_at, updated_at, archived_at, synced_at, embedding, embedding_qwen
 	FROM documents
 	WHERE id = ?
 	`
 
 	err := d.db.QueryRow(query, id).Scan(
 		&doc.ID, &doc.Title, &doc.Content, &doc.AuthorName, &doc.AuthorEmail,
-		&doc.SlabURL, &doc.Topics, &doc.PublishedAt, &doc.UpdatedAt, &doc.ArchivedAt, &doc.SyncedAt, &doc.Embedding,
+		&doc.SlabURL, &doc.Topics, &doc.PublishedAt, &doc.UpdatedAt, &doc.ArchivedAt, &doc.SyncedAt, &doc.Embedding, &doc.EmbeddingQwen,
 	)
 
 	if err == sql.ErrNoRows {
@@ -159,7 +180,7 @@ func (d *DB) Get(id string) (*Document, error) {
 func (d *DB) List(includeArchived bool) ([]*Document, error) {
 	query := `
 	SELECT id, title, content, author_name, author_email,
-	       slab_url, topics, published_at, updated_at, archived_at, synced_at, embedding
+	       slab_url, topics, published_at, updated_at, archived_at, synced_at, embedding, embedding_qwen
 	FROM documents
 	`
 	if !includeArchived {
@@ -178,7 +199,7 @@ func (d *DB) List(includeArchived bool) ([]*Document, error) {
 		doc := &Document{}
 		err := rows.Scan(
 			&doc.ID, &doc.Title, &doc.Content, &doc.AuthorName, &doc.AuthorEmail,
-			&doc.SlabURL, &doc.Topics, &doc.PublishedAt, &doc.UpdatedAt, &doc.ArchivedAt, &doc.SyncedAt, &doc.Embedding,
+			&doc.SlabURL, &doc.Topics, &doc.PublishedAt, &doc.UpdatedAt, &doc.ArchivedAt, &doc.SyncedAt, &doc.Embedding, &doc.EmbeddingQwen,
 		)
 		if err != nil {
 			return nil, err

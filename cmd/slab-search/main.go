@@ -69,6 +69,7 @@ func main() {
 		searchFlags := flag.NewFlagSet("search", flag.ExitOnError)
 		semantic := searchFlags.Bool("semantic", false, "Use semantic search only")
 		hybrid := searchFlags.Float64("hybrid", 0.0, "Use hybrid search (0.0-1.0, where value is semantic weight)")
+		model := searchFlags.String("model", "nomic", "Embedding model to use: nomic or qwen")
 
 		searchFlags.Parse(os.Args[commandIdx+1:])
 
@@ -79,7 +80,7 @@ func main() {
 		}
 
 		query := strings.Join(searchFlags.Args(), " ")
-		runSearch(query, *semantic, *hybrid)
+		runSearch(query, *semantic, *hybrid, *model)
 	case "serve":
 		// Parse serve flags
 		serveFlags := flag.NewFlagSet("serve", flag.ExitOnError)
@@ -93,10 +94,11 @@ func main() {
 		// Parse embed flags
 		embedFlags := flag.NewFlagSet("embed", flag.ExitOnError)
 		startFrom := embedFlags.String("start-from", "", "Resume from document ID")
+		model := embedFlags.String("model", "nomic", "Embedding model to use: nomic or qwen")
 
 		embedFlags.Parse(os.Args[commandIdx+1:])
 
-		runEmbed(*startFrom)
+		runEmbed(*startFrom, *model)
 	case "reindex":
 		runReindex()
 	case "stats":
@@ -136,6 +138,7 @@ func printUsage() {
 	fmt.Println("Search Flags:")
 	fmt.Println("  -semantic         Use semantic search only (requires embeddings)")
 	fmt.Println("  -hybrid=<weight>  Use hybrid search (0.0-1.0 semantic weight, default keyword-only)")
+	fmt.Println("  -model=<model>    Embedding model to use: nomic or qwen (default: nomic)")
 	fmt.Println()
 	fmt.Println("Serve Flags:")
 	fmt.Println("  -host=<host>      Host to bind to (default: localhost)")
@@ -143,6 +146,7 @@ func printUsage() {
 	fmt.Println()
 	fmt.Println("Embed Flags:")
 	fmt.Println("  -start-from=<id>  Resume from document ID (e.g., after interruption)")
+	fmt.Println("  -model=<model>    Embedding model to use: nomic or qwen (default: nomic)")
 	fmt.Println()
 	fmt.Println("Examples:")
 	fmt.Println("  slab-search sync")
@@ -151,9 +155,11 @@ func printUsage() {
 	fmt.Println("  slab-search search 'deploy~'                     # Fuzzy search")
 	fmt.Println("  slab-search search -semantic \"database scaling\"  # Semantic search only")
 	fmt.Println("  slab-search search -hybrid=0.3 kubernetes        # Hybrid (70% keyword, 30% semantic)")
+	fmt.Println("  slab-search search -semantic -model=qwen \"k8s\"   # Semantic search with Qwen model")
 	fmt.Println("  slab-search serve                                # Start web server on http://localhost:6893")
 	fmt.Println("  slab-search serve -port=3000                     # Start on custom port")
-	fmt.Println("  slab-search embed                                # Generate embeddings for all documents")
+	fmt.Println("  slab-search embed                                # Generate embeddings with nomic-embed-text")
+	fmt.Println("  slab-search embed -model=qwen                    # Generate embeddings with qwen3-embedding")
 	fmt.Println("  slab-search embed -start-from=abc123             # Resume from specific document ID")
 	fmt.Println("  slab-search reindex                              # Rebuild Bleve index (fast)")
 	fmt.Println()
@@ -224,7 +230,22 @@ func runSync() {
 	fmt.Printf("Duration:      %v\n", stats.Duration)
 }
 
-func runSearch(query string, semanticOnly bool, hybridWeight float64) {
+func runSearch(query string, semanticOnly bool, hybridWeight float64, modelName string) {
+	// Determine which model and embedding field to use
+	var ollamaModelName string
+	var useQwenField bool
+
+	switch modelName {
+	case "nomic":
+		ollamaModelName = "nomic-embed-text"
+		useQwenField = false
+	case "qwen":
+		ollamaModelName = "qwen3-embedding"
+		useQwenField = true
+	default:
+		log.Fatalf("Error: Unknown model '%s'. Supported models: nomic, qwen", modelName)
+	}
+
 	// Open database
 	db, err := storage.Open(dbPath)
 	if err != nil {
@@ -247,9 +268,9 @@ func runSearch(query string, semanticOnly bool, hybridWeight float64) {
 	// Determine search mode
 	if semanticOnly || hybridWeight > 0 {
 		// Initialize embeddings client for semantic/hybrid search
-		embedder := embeddings.NewClient(ollamaURL, ollamaModel)
+		embedder := embeddings.NewClient(ollamaURL, ollamaModelName)
 		if err := embedder.Health(); err != nil {
-			log.Fatalf("Error: Semantic search requires Ollama. Please install and run: ollama pull %s", ollamaModel)
+			log.Fatalf("Error: Semantic search requires Ollama. Please install and run: ollama pull %s", ollamaModelName)
 		}
 
 		// Generate query embedding
@@ -260,13 +281,13 @@ func runSearch(query string, semanticOnly bool, hybridWeight float64) {
 
 		if semanticOnly {
 			// Pure semantic search
-			fmt.Println("Using semantic search...")
-			results, err = idx.SemanticSearch(queryEmbedding, 10)
+			fmt.Printf("Using semantic search with %s model...\n", modelName)
+			results, err = idx.SemanticSearch(queryEmbedding, 10, useQwenField)
 		} else {
 			// Hybrid search
-			fmt.Printf("Using hybrid search (%.0f%% keyword, %.0f%% semantic)...\n",
-				(1-hybridWeight)*100, hybridWeight*100)
-			results, err = idx.HybridSearch(query, queryEmbedding, 10, 1-hybridWeight)
+			fmt.Printf("Using hybrid search (%.0f%% keyword, %.0f%% semantic) with %s model...\n",
+				(1-hybridWeight)*100, hybridWeight*100, modelName)
+			results, err = idx.HybridSearch(query, queryEmbedding, 10, 1-hybridWeight, useQwenField)
 		}
 
 		if err != nil {
@@ -359,8 +380,23 @@ func runGetDoc(docID string) {
 	fmt.Println(doc.Content)
 }
 
-func runEmbed(startFrom string) {
-	fmt.Println("Generating embeddings for all documents...")
+func runEmbed(startFrom string, modelName string) {
+	// Determine which model and embedding field to use
+	var ollamaModelName string
+	var useQwenField bool
+
+	switch modelName {
+	case "nomic":
+		ollamaModelName = "nomic-embed-text"
+		useQwenField = false
+	case "qwen":
+		ollamaModelName = "qwen3-embedding"
+		useQwenField = true
+	default:
+		log.Fatalf("Error: Unknown model '%s'. Supported models: nomic, qwen", modelName)
+	}
+
+	fmt.Printf("Generating embeddings for all documents using %s model...\n", modelName)
 	fmt.Println()
 
 	// Open database
@@ -371,11 +407,11 @@ func runEmbed(startFrom string) {
 	defer db.Close()
 
 	// Initialize embeddings client
-	embedder := embeddings.NewClient(ollamaURL, ollamaModel)
+	embedder := embeddings.NewClient(ollamaURL, ollamaModelName)
 	if err := embedder.Health(); err != nil {
 		log.Fatalf("Error: Ollama not available (%v)", err)
 	}
-	log.Printf("✓ Using Ollama with model: %s", ollamaModel)
+	log.Printf("✓ Using Ollama with model: %s", ollamaModelName)
 
 	// Get all documents
 	docs, err := db.List(false)
@@ -430,8 +466,14 @@ func runEmbed(startFrom string) {
 			continue
 		}
 
-		// Update document with embedding
-		doc.Embedding = embeddings.SerializeEmbedding(embedding)
+		// Update document with embedding in the appropriate field
+		serializedEmbedding := embeddings.SerializeEmbedding(embedding)
+		if useQwenField {
+			doc.EmbeddingQwen = serializedEmbedding
+		} else {
+			doc.Embedding = serializedEmbedding
+		}
+
 		if err := db.Upsert(doc); err != nil {
 			log.Printf("\nWarning: Failed to update embedding for %s: %v", doc.ID, err)
 			embeddingsFailed++

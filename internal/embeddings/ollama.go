@@ -20,11 +20,21 @@ type Client struct {
 
 // NewClient creates a new Ollama embedding client
 func NewClient(baseURL, model string) *Client {
+	// Set timeout based on model size
+	// Larger models (qwen, etc.) need more time to generate embeddings
+	timeout := 60 * time.Second // Default for small models (nomic-embed-text)
+
+	// Increase timeout for large models
+	if model == "qwen3-embedding" || model == "qwen3-embedding:latest" ||
+	   model == "qwen3-embedding:8b" || model == "qwen3-embedding:4b" {
+		timeout = 3 * time.Minute // 3 minutes for large qwen models
+	}
+
 	return &Client{
 		baseURL: baseURL,
 		model:   model,
 		client: &http.Client{
-			Timeout: 60 * time.Second, // Longer timeout for embedding generation
+			Timeout: timeout,
 		},
 	}
 }

@@ -151,7 +151,8 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		results, err = s.idx.SemanticSearch(queryEmbedding, limit)
+		// For web UI, default to nomic embeddings (useQwen = false)
+		results, err = s.idx.SemanticSearch(queryEmbedding, limit, false)
 
 	case "hybrid":
 		if s.embedder == nil {
@@ -172,7 +173,8 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// hybridWeight is semantic weight, so keyword weight = 1 - hybridWeight
-		results, err = s.idx.HybridSearch(query, queryEmbedding, limit, 1-hybridWeight)
+		// For web UI, default to nomic embeddings (useQwen = false)
+		results, err = s.idx.HybridSearch(query, queryEmbedding, limit, 1-hybridWeight, false)
 
 	default: // keyword
 		results, err = s.idx.Search(query, limit)
