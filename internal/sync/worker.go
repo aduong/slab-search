@@ -42,6 +42,7 @@ type Stats struct {
 	NewPosts         int
 	UpdatedPosts     int
 	SkippedPosts     int
+	ArchivedRemoved  int // Number of archived posts removed from search
 	EmbeddingsGen    int // Number of embeddings generated
 	EmbeddingsFailed int // Number of embedding failures
 	Errors           int
@@ -63,14 +64,16 @@ func (w *Worker) Sync(ctx context.Context) (*Stats, error) {
 	}
 	log.Printf("Found %d posts from Slab\n", len(allPostsSlice))
 
-	// 2. Filter and prepare posts
+	// 2. Filter and prepare posts, collect archived post IDs for removal
 	log.Println("Filtering posts...")
 	allPosts := make(map[string]*slab.SlimPost)
+	archivedPostIDs := make([]string, 0)
 	postCount := 0
 
 	for i := range allPostsSlice {
-		// Skip archived posts
+		// Collect archived posts for removal from search index
 		if allPostsSlice[i].ArchivedAt != nil {
+			archivedPostIDs = append(archivedPostIDs, allPostsSlice[i].ID)
 			continue
 		}
 
@@ -110,16 +113,20 @@ func (w *Worker) Sync(ctx context.Context) (*Stats, error) {
 		for range progressTicker.C {
 			mu.Lock()
 			current := processed
+			newPosts := stats.NewPosts
+			updatedPosts := stats.UpdatedPosts
+			skippedPosts := stats.SkippedPosts
+			errors := stats.Errors
 			embGen := stats.EmbeddingsGen
 			mu.Unlock()
 			if current > 0 && current < totalPosts {
 				percent := float64(current) / float64(totalPosts) * 100
 				if w.enableEmbeddings {
 					log.Printf("Progress: %d/%d (%.1f%%) - %d new, %d updated, %d skipped, %d errors, %d embeddings\n",
-						current, totalPosts, percent, stats.NewPosts, stats.UpdatedPosts, stats.SkippedPosts, stats.Errors, embGen)
+						current, totalPosts, percent, newPosts, updatedPosts, skippedPosts, errors, embGen)
 				} else {
 					log.Printf("Progress: %d/%d (%.1f%%) - %d new, %d updated, %d skipped, %d errors\n",
-						current, totalPosts, percent, stats.NewPosts, stats.UpdatedPosts, stats.SkippedPosts, stats.Errors)
+						current, totalPosts, percent, newPosts, updatedPosts, skippedPosts, errors)
 				}
 			}
 		}
@@ -147,13 +154,26 @@ func (w *Worker) Sync(ctx context.Context) (*Stats, error) {
 
 	wg.Wait()
 
+	// 4. Remove archived posts from search index
+	if len(archivedPostIDs) > 0 {
+		log.Printf("Removing %d archived posts from search index...\n", len(archivedPostIDs))
+		for _, postID := range archivedPostIDs {
+			if err := w.index.Delete(postID); err != nil {
+				log.Printf("Warning: Failed to remove archived post %s from search: %v\n", postID, err)
+			} else {
+				stats.ArchivedRemoved++
+			}
+		}
+		log.Printf("Removed %d archived posts from search\n", stats.ArchivedRemoved)
+	}
+
 	stats.Duration = time.Since(startTime)
 	if w.enableEmbeddings {
-		log.Printf("Sync complete: %d new, %d updated, %d skipped, %d errors, %d embeddings generated (%d failed) in %v\n",
-			stats.NewPosts, stats.UpdatedPosts, stats.SkippedPosts, stats.Errors, stats.EmbeddingsGen, stats.EmbeddingsFailed, stats.Duration)
+		log.Printf("Sync complete: %d new, %d updated, %d skipped, %d archived removed, %d errors, %d embeddings generated (%d failed) in %v\n",
+			stats.NewPosts, stats.UpdatedPosts, stats.SkippedPosts, stats.ArchivedRemoved, stats.Errors, stats.EmbeddingsGen, stats.EmbeddingsFailed, stats.Duration)
 	} else {
-		log.Printf("Sync complete: %d new, %d updated, %d skipped, %d errors in %v\n",
-			stats.NewPosts, stats.UpdatedPosts, stats.SkippedPosts, stats.Errors, stats.Duration)
+		log.Printf("Sync complete: %d new, %d updated, %d skipped, %d archived removed, %d errors in %v\n",
+			stats.NewPosts, stats.UpdatedPosts, stats.SkippedPosts, stats.ArchivedRemoved, stats.Errors, stats.Duration)
 	}
 
 	return stats, nil
