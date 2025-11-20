@@ -74,6 +74,73 @@
                 document.getElementById('searchInput').focus();
             }
         });
+
+        // URL parameter support for browser keywords
+        (function() {
+            const searchInput = document.getElementById('searchInput');
+            const urlParams = new URLSearchParams(window.location.search);
+
+            // Read URL parameters on page load
+            const queryParam = urlParams.get('q');
+            const modeParam = urlParams.get('mode');
+
+            // Populate search input from ?q= parameter
+            if (queryParam) {
+                searchInput.value = queryParam;
+            }
+
+            // Select mode radio button from ?mode= parameter
+            if (modeParam) {
+                const modeRadio = document.querySelector(`input[name="mode"][value="${modeParam}"]`);
+                if (modeRadio) {
+                    modeRadio.checked = true;
+                }
+            }
+
+            // Auto-trigger search if query parameter is present
+            // Use setTimeout to ensure HTMX has initialized
+            if (queryParam) {
+                setTimeout(function() {
+                    htmx.trigger(searchInput, 'search');
+                }, 100);
+            }
+
+            // Update URL when search input changes (debounced)
+            let updateUrlTimeout;
+            searchInput.addEventListener('input', function() {
+                clearTimeout(updateUrlTimeout);
+                updateUrlTimeout = setTimeout(function() {
+                    updateUrl();
+                }, 500);
+            });
+
+            // Update URL when mode changes
+            document.querySelectorAll('input[name="mode"]').forEach(function(radio) {
+                radio.addEventListener('change', function() {
+                    updateUrl();
+                });
+            });
+
+            // Helper function to update URL with current search state
+            function updateUrl() {
+                const query = searchInput.value.trim();
+                const mode = document.querySelector('input[name="mode"]:checked').value;
+
+                const params = new URLSearchParams();
+                if (query) {
+                    params.set('q', query);
+                }
+                if (mode !== 'keyword') {
+                    params.set('mode', mode);
+                }
+
+                const newUrl = params.toString()
+                    ? window.location.pathname + '?' + params.toString()
+                    : window.location.pathname;
+
+                history.replaceState(null, '', newUrl);
+            }
+        })();
     </script>
 </body>
 </html>
