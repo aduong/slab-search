@@ -442,10 +442,6 @@ Connection queries require pagination. All implemented queries include `first: 1
 
 **Note:** JWT tokens may expire. Refresh by re-extracting from browser.
 
-## License
-
-Internal Render tool.
-
 ## Credits
 
 Built with Claude Code during API exploration and rapid prototyping session.
