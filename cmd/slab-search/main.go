@@ -74,6 +74,13 @@ func main() {
 		runReindex()
 	case "stats":
 		runStats()
+	case "get-doc":
+		if len(os.Args) < 3 {
+			fmt.Println("Error: document ID required")
+			fmt.Println("Usage: slab-search get-doc <document-id>")
+			os.Exit(1)
+		}
+		runGetDoc(os.Args[2])
 	default:
 		fmt.Printf("Unknown command: %s\n", command)
 		printUsage()
@@ -91,6 +98,7 @@ func printUsage() {
 	fmt.Println("  slab-search embed [flags]            Generate embeddings for all documents (expensive, ~8-12 min)")
 	fmt.Println("  slab-search reindex                  Rebuild Bleve keyword index (~10 seconds)")
 	fmt.Println("  slab-search stats                    Show index statistics")
+	fmt.Println("  slab-search get-doc <id>             Retrieve document markdown by ID")
 	fmt.Println()
 	fmt.Println("Search Flags:")
 	fmt.Println("  -semantic         Use semantic search only (requires embeddings)")
@@ -289,6 +297,29 @@ func runStats() {
 	fmt.Println("=== Index Statistics ===")
 	fmt.Printf("Documents in database: %d\n", dbCount)
 	fmt.Printf("Documents in index:    %d\n", indexCount)
+}
+
+func runGetDoc(docID string) {
+	// Open database
+	db, err := storage.Open(dbPath)
+	if err != nil {
+		log.Fatalf("Error opening database: %v", err)
+	}
+	defer db.Close()
+
+	// Retrieve document
+	doc, err := db.Get(docID)
+	if err != nil {
+		log.Fatalf("Error retrieving document: %v", err)
+	}
+
+	if doc == nil {
+		fmt.Printf("Document not found: %s\n", docID)
+		os.Exit(1)
+	}
+
+	// Output markdown content
+	fmt.Println(doc.Content)
 }
 
 func runEmbed(startFrom string) {

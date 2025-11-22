@@ -69,6 +69,7 @@ func (s *Server) Handler() http.Handler {
 	// Routes
 	mux.HandleFunc("/", s.handleIndex)
 	mux.HandleFunc("/api/search", s.handleSearch)
+	mux.HandleFunc("/api/doc", s.handleGetDoc)
 	mux.HandleFunc("/health", s.handleHealth)
 
 	return mux
@@ -246,4 +247,28 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		"documents_in_index": indexCount,
 		"embeddings_available": s.embedder != nil,
 	})
+}
+
+func (s *Server) handleGetDoc(w http.ResponseWriter, r *http.Request) {
+	docID := r.URL.Query().Get("id")
+	if docID == "" {
+		http.Error(w, "Missing id parameter", http.StatusBadRequest)
+		return
+	}
+
+	// Retrieve document from database
+	doc, err := s.db.Get(docID)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("Error retrieving document: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	if doc == nil {
+		http.Error(w, "Document not found", http.StatusNotFound)
+		return
+	}
+
+	// Return markdown content
+	w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+	w.Write([]byte(doc.Content))
 }
