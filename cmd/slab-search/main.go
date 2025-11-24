@@ -19,20 +19,47 @@ import (
 )
 
 const (
-	dataDir    = "./data"
-	dbPath     = "./data/slab.db"
-	indexPath  = "./data/bleve"
-	ollamaURL  = "http://localhost:11434"
+	ollamaURL   = "http://localhost:11434"
 	ollamaModel = "nomic-embed-text"
 )
 
+var (
+	dataDir   string
+	dbPath    string
+	indexPath string
+)
+
 func main() {
+	// Parse global flags
+	globalFlags := flag.NewFlagSet("global", flag.ExitOnError)
+	dataDirFlag := globalFlags.String("data-dir", "./data", "Directory for database and index files")
+
+	// Check if we have any arguments
 	if len(os.Args) < 2 {
 		printUsage()
 		os.Exit(1)
 	}
 
-	command := os.Args[1]
+	// Find where the command starts (skip global flags)
+	commandIdx := 1
+	for i := 1; i < len(os.Args); i++ {
+		if !strings.HasPrefix(os.Args[i], "-") {
+			commandIdx = i
+			break
+		}
+	}
+
+	// Parse global flags if any exist before the command
+	if commandIdx > 1 {
+		globalFlags.Parse(os.Args[1:commandIdx])
+	}
+
+	// Set paths based on data-dir flag
+	dataDir = *dataDirFlag
+	dbPath = dataDir + "/slab.db"
+	indexPath = dataDir + "/bleve"
+
+	command := os.Args[commandIdx]
 
 	switch command {
 	case "sync":
@@ -43,11 +70,11 @@ func main() {
 		semantic := searchFlags.Bool("semantic", false, "Use semantic search only")
 		hybrid := searchFlags.Float64("hybrid", 0.0, "Use hybrid search (0.0-1.0, where value is semantic weight)")
 
-		searchFlags.Parse(os.Args[2:])
+		searchFlags.Parse(os.Args[commandIdx+1:])
 
 		if searchFlags.NArg() < 1 {
 			fmt.Println("Error: search query required")
-			fmt.Println("Usage: slab-search search [flags] <query>")
+			fmt.Println("Usage: slab-search [--data-dir=<dir>] search [flags] <query>")
 			os.Exit(1)
 		}
 
@@ -59,7 +86,7 @@ func main() {
 		port := serveFlags.String("port", "6893", "Port to listen on")
 		host := serveFlags.String("host", "localhost", "Host to bind to")
 
-		serveFlags.Parse(os.Args[2:])
+		serveFlags.Parse(os.Args[commandIdx+1:])
 
 		runServe(*host, *port)
 	case "embed":
@@ -67,7 +94,7 @@ func main() {
 		embedFlags := flag.NewFlagSet("embed", flag.ExitOnError)
 		startFrom := embedFlags.String("start-from", "", "Resume from document ID")
 
-		embedFlags.Parse(os.Args[2:])
+		embedFlags.Parse(os.Args[commandIdx+1:])
 
 		runEmbed(*startFrom)
 	case "reindex":
@@ -75,12 +102,12 @@ func main() {
 	case "stats":
 		runStats()
 	case "get-doc":
-		if len(os.Args) < 3 {
+		if len(os.Args) < commandIdx+2 {
 			fmt.Println("Error: document ID required")
-			fmt.Println("Usage: slab-search get-doc <document-id>")
+			fmt.Println("Usage: slab-search [--data-dir=<dir>] get-doc <document-id>")
 			os.Exit(1)
 		}
-		runGetDoc(os.Args[2])
+		runGetDoc(os.Args[commandIdx+1])
 	default:
 		fmt.Printf("Unknown command: %s\n", command)
 		printUsage()
@@ -92,13 +119,19 @@ func printUsage() {
 	fmt.Println("Slab Search - Fast search for Slab documents")
 	fmt.Println()
 	fmt.Println("Usage:")
-	fmt.Println("  slab-search sync                     Sync posts from Slab + generate embeddings (if Ollama running)")
-	fmt.Println("  slab-search search [flags] <query>   Search for documents")
-	fmt.Println("  slab-search serve [flags]            Start web server")
-	fmt.Println("  slab-search embed [flags]            Generate embeddings for all documents (expensive, ~8-12 min)")
-	fmt.Println("  slab-search reindex                  Rebuild Bleve keyword index (~10 seconds)")
-	fmt.Println("  slab-search stats                    Show index statistics")
-	fmt.Println("  slab-search get-doc <id>             Retrieve document markdown by ID")
+	fmt.Println("  slab-search [global-flags] <command> [flags]")
+	fmt.Println()
+	fmt.Println("Global Flags:")
+	fmt.Println("  --data-dir=<dir>  Directory for database and index files (default: ./data)")
+	fmt.Println()
+	fmt.Println("Commands:")
+	fmt.Println("  sync                     Sync posts from Slab + generate embeddings (if Ollama running)")
+	fmt.Println("  search [flags] <query>   Search for documents")
+	fmt.Println("  serve [flags]            Start web server")
+	fmt.Println("  embed [flags]            Generate embeddings for all documents (expensive, ~8-12 min)")
+	fmt.Println("  reindex                  Rebuild Bleve keyword index (~10 seconds)")
+	fmt.Println("  stats                    Show index statistics")
+	fmt.Println("  get-doc <id>             Retrieve document markdown by ID")
 	fmt.Println()
 	fmt.Println("Search Flags:")
 	fmt.Println("  -semantic         Use semantic search only (requires embeddings)")
@@ -123,6 +156,10 @@ func printUsage() {
 	fmt.Println("  slab-search embed                                # Generate embeddings for all documents")
 	fmt.Println("  slab-search embed -start-from=abc123             # Resume from specific document ID")
 	fmt.Println("  slab-search reindex                              # Rebuild Bleve index (fast)")
+	fmt.Println()
+	fmt.Println("Using custom data directory:")
+	fmt.Println("  slab-search --data-dir=/path/to/data search kubernetes")
+	fmt.Println("  slab-search --data-dir=$HOME/.slab-search serve")
 }
 
 func runSync() {
