@@ -23,7 +23,7 @@ var staticFS embed.FS
 type Server struct {
 	db        *storage.DB
 	idx       *search.Index
-	embedder  *embeddings.Client
+	embedder  embeddings.Embedder
 	templates *template.Template
 }
 
@@ -42,7 +42,7 @@ type SearchResponse struct {
 	Error   string                 `json:"error,omitempty"`
 }
 
-func NewServer(db *storage.DB, idx *search.Index, embedder *embeddings.Client) (*Server, error) {
+func NewServer(db *storage.DB, idx *search.Index, embedder embeddings.Embedder) (*Server, error) {
 	// Parse templates
 	tmpl, err := template.ParseFS(templatesFS, "templates/*.html")
 	if err != nil {

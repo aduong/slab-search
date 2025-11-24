@@ -18,21 +18,18 @@ import (
 	"github.com/renderinc/slab-search/internal/web"
 )
 
-const (
-	ollamaURL   = "http://localhost:11434"
-	ollamaModel = "nomic-embed-text"
-)
-
 var (
-	dataDir   string
-	dbPath    string
-	indexPath string
+	dataDir           string
+	dbPath            string
+	indexPath         string
+	embeddingProvider string
 )
 
 func main() {
 	// Parse global flags
 	globalFlags := flag.NewFlagSet("global", flag.ExitOnError)
 	dataDirFlag := globalFlags.String("data-dir", "./data", "Directory for database and index files")
+	providerFlag := globalFlags.String("embedding-provider", "lmstudio", "Embedding provider: lmstudio or ollama")
 
 	// Check if we have any arguments
 	if len(os.Args) < 2 {
@@ -58,6 +55,7 @@ func main() {
 	dataDir = *dataDirFlag
 	dbPath = dataDir + "/slab.db"
 	indexPath = dataDir + "/bleve"
+	embeddingProvider = *providerFlag
 
 	command := os.Args[commandIdx]
 
@@ -124,10 +122,11 @@ func printUsage() {
 	fmt.Println("  slab-search [global-flags] <command> [flags]")
 	fmt.Println()
 	fmt.Println("Global Flags:")
-	fmt.Println("  --data-dir=<dir>  Directory for database and index files (default: ./data)")
+	fmt.Println("  --data-dir=<dir>            Directory for database and index files (default: ./data)")
+	fmt.Println("  --embedding-provider=<name> Embedding provider: lmstudio or ollama (default: lmstudio)")
 	fmt.Println()
 	fmt.Println("Commands:")
-	fmt.Println("  sync                     Sync posts from Slab + generate embeddings (if Ollama running)")
+	fmt.Println("  sync                     Sync posts from Slab + generate embeddings (if provider available)")
 	fmt.Println("  search [flags] <query>   Search for documents")
 	fmt.Println("  serve [flags]            Start web server")
 	fmt.Println("  embed [flags]            Generate embeddings for all documents (expensive, ~8-12 min)")
@@ -166,6 +165,11 @@ func printUsage() {
 	fmt.Println("Using custom data directory:")
 	fmt.Println("  slab-search --data-dir=/path/to/data search kubernetes")
 	fmt.Println("  slab-search --data-dir=$HOME/.slab-search serve")
+	fmt.Println()
+	fmt.Println("Using different embedding providers:")
+	fmt.Println("  slab-search --embedding-provider=lmstudio sync           # Use LMStudio (default)")
+	fmt.Println("  slab-search --embedding-provider=ollama embed            # Use Ollama")
+	fmt.Println("  slab-search --embedding-provider=ollama search -semantic \"k8s\" # Search with Ollama")
 }
 
 func runSync() {
@@ -196,14 +200,19 @@ func runSync() {
 	defer idx.Close()
 
 	// Try to initialize embeddings client (optional - graceful degradation)
-	var embedder *embeddings.Client
-	embedder = embeddings.NewClient(ollamaURL, ollamaModel)
-	if err := embedder.Health(); err != nil {
-		log.Printf("Warning: Ollama not available (%v), skipping embedding generation", err)
-		log.Printf("To enable semantic search, install Ollama and run: ollama pull %s", ollamaModel)
+	var embedder embeddings.Embedder
+	embedURL := embeddings.GetDefaultURL(embeddingProvider)
+	embedModel := embeddings.GetDefaultModel(embeddingProvider)
+	embedder, err = embeddings.NewEmbedder(embeddingProvider, embedURL, embedModel)
+	if err != nil {
+		log.Printf("Warning: Failed to create embedding client: %v", err)
+		embedder = nil
+	} else if err := embedder.Health(); err != nil {
+		log.Printf("Warning: %s not available (%v), skipping embedding generation", embeddingProvider, err)
+		log.Printf("To enable semantic search, ensure %s is running with model: %s", embeddingProvider, embedModel)
 		embedder = nil // Disable embeddings
 	} else {
-		log.Printf("✓ Ollama available, will generate embeddings with %s", ollamaModel)
+		log.Printf("✓ %s available, will generate embeddings with %s", embeddingProvider, embedModel)
 	}
 
 	// Create sync worker (0 = unlimited)
@@ -231,20 +240,20 @@ func runSync() {
 }
 
 func runSearch(query string, semanticOnly bool, hybridWeight float64, modelName string) {
-	// Determine which model and embedding field to use
-	var ollamaModelName string
+	// Determine which embedding field to use
 	var useQwenField bool
 
 	switch modelName {
 	case "nomic":
-		ollamaModelName = "nomic-embed-text"
 		useQwenField = false
 	case "qwen":
-		ollamaModelName = "qwen3-embedding"
 		useQwenField = true
 	default:
 		log.Fatalf("Error: Unknown model '%s'. Supported models: nomic, qwen", modelName)
 	}
+
+	// Get provider-specific model name
+	actualModelName := embeddings.GetModelName(embeddingProvider, modelName)
 
 	// Open database
 	db, err := storage.Open(dbPath)
@@ -268,9 +277,13 @@ func runSearch(query string, semanticOnly bool, hybridWeight float64, modelName 
 	// Determine search mode
 	if semanticOnly || hybridWeight > 0 {
 		// Initialize embeddings client for semantic/hybrid search
-		embedder := embeddings.NewClient(ollamaURL, ollamaModelName)
+		embedURL := embeddings.GetDefaultURL(embeddingProvider)
+		embedder, err := embeddings.NewEmbedder(embeddingProvider, embedURL, actualModelName)
+		if err != nil {
+			log.Fatalf("Error: Failed to create embedding client: %v", err)
+		}
 		if err := embedder.Health(); err != nil {
-			log.Fatalf("Error: Semantic search requires Ollama. Please install and run: ollama pull %s", ollamaModelName)
+			log.Fatalf("Error: Semantic search requires %s. Please ensure it's running with model: %s", embeddingProvider, actualModelName)
 		}
 
 		// Generate query embedding
@@ -381,20 +394,20 @@ func runGetDoc(docID string) {
 }
 
 func runEmbed(startFrom string, modelName string) {
-	// Determine which model and embedding field to use
-	var ollamaModelName string
+	// Determine which embedding field to use
 	var useQwenField bool
 
 	switch modelName {
 	case "nomic":
-		ollamaModelName = "nomic-embed-text"
 		useQwenField = false
 	case "qwen":
-		ollamaModelName = "qwen3-embedding"
 		useQwenField = true
 	default:
 		log.Fatalf("Error: Unknown model '%s'. Supported models: nomic, qwen", modelName)
 	}
+
+	// Get provider-specific model name
+	actualModelName := embeddings.GetModelName(embeddingProvider, modelName)
 
 	fmt.Printf("Generating embeddings for all documents using %s model...\n", modelName)
 	fmt.Println()
@@ -407,11 +420,15 @@ func runEmbed(startFrom string, modelName string) {
 	defer db.Close()
 
 	// Initialize embeddings client
-	embedder := embeddings.NewClient(ollamaURL, ollamaModelName)
-	if err := embedder.Health(); err != nil {
-		log.Fatalf("Error: Ollama not available (%v)", err)
+	embedURL := embeddings.GetDefaultURL(embeddingProvider)
+	embedder, err := embeddings.NewEmbedder(embeddingProvider, embedURL, actualModelName)
+	if err != nil {
+		log.Fatalf("Error: Failed to create embedding client: %v", err)
 	}
-	log.Printf("✓ Using Ollama with model: %s", ollamaModelName)
+	if err := embedder.Health(); err != nil {
+		log.Fatalf("Error: %s not available (%v)", embeddingProvider, err)
+	}
+	log.Printf("✓ Using %s with model: %s", embeddingProvider, actualModelName)
 
 	// Get all documents
 	docs, err := db.List(false)
@@ -578,17 +595,22 @@ func runServe(host, port string) {
 	log.Println("DEBUG: Search index opened")
 
 	// Try to initialize embeddings client (optional)
-	log.Println("DEBUG: Checking Ollama...")
-	var embedder *embeddings.Client
-	embedder = embeddings.NewClient(ollamaURL, ollamaModel)
-	if err := embedder.Health(); err != nil {
-		log.Printf("Warning: Ollama not available (%v), semantic/hybrid search disabled", err)
-		log.Printf("To enable semantic search, install Ollama and run: ollama pull %s", ollamaModel)
+	log.Printf("DEBUG: Checking %s...", embeddingProvider)
+	var embedder embeddings.Embedder
+	embedURL := embeddings.GetDefaultURL(embeddingProvider)
+	embedModel := embeddings.GetDefaultModel(embeddingProvider)
+	embedder, err = embeddings.NewEmbedder(embeddingProvider, embedURL, embedModel)
+	if err != nil {
+		log.Printf("Warning: Failed to create embedding client: %v", err)
+		embedder = nil
+	} else if err := embedder.Health(); err != nil {
+		log.Printf("Warning: %s not available (%v), semantic/hybrid search disabled", embeddingProvider, err)
+		log.Printf("To enable semantic search, ensure %s is running with model: %s", embeddingProvider, embedModel)
 		embedder = nil
 	} else {
-		log.Printf("✓ Ollama available, semantic and hybrid search enabled")
+		log.Printf("✓ %s available, semantic and hybrid search enabled", embeddingProvider)
 	}
-	log.Println("DEBUG: Ollama check complete")
+	log.Printf("DEBUG: %s check complete", embeddingProvider)
 
 	// Create server
 	log.Println("DEBUG: Creating web server...")

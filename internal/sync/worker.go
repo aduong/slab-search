@@ -19,13 +19,13 @@ type Worker struct {
 	slabClient     *slab.Client
 	db             *storage.DB
 	index          *search.Index
-	embedder       *embeddings.Client // Optional: nil if embeddings disabled
-	maxPosts       int                // Limit for testing (0 = unlimited)
-	enableEmbeddings bool             // Whether to generate embeddings
+	embedder       embeddings.Embedder // Optional: nil if embeddings disabled
+	maxPosts       int                 // Limit for testing (0 = unlimited)
+	enableEmbeddings bool              // Whether to generate embeddings
 }
 
 // NewWorker creates a new sync worker
-func NewWorker(slabClient *slab.Client, db *storage.DB, index *search.Index, embedder *embeddings.Client, maxPosts int) *Worker {
+func NewWorker(slabClient *slab.Client, db *storage.DB, index *search.Index, embedder embeddings.Embedder, maxPosts int) *Worker {
 	return &Worker{
 		slabClient:       slabClient,
 		db:               db,

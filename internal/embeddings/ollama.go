@@ -11,6 +11,9 @@ import (
 	"time"
 )
 
+// Ensure Client implements Embedder interface at compile time
+var _ Embedder = (*Client)(nil)
+
 // Client represents an Ollama embedding client
 type Client struct {
 	baseURL string
